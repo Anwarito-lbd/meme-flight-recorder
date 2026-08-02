@@ -1,0 +1,172 @@
+{
+  "as_of": "2026-08-02",
+  "policy": "Research leads only. No entry may be authorized from this file.",
+  "personalities": [
+    {
+      "name": "Kimchi / Clayton Kim",
+      "public_handle": "@kimchi1x",
+      "wallets": [],
+      "status": "unverified_identity_to_wallet",
+      "reported_method_leads": [
+        "long-duration daily scanning",
+        "wallet tracking",
+        "private trader network",
+        "very early narrative and launch participation"
+      ],
+      "claim": "Widely repeated claim of approximately $40M profit on TRUMP",
+      "claim_status": "not_independently_verified_onchain",
+      "sources": [
+        "https://x.com/kimchi1x",
+        "https://www.kucoin.com/news/flash/kimchi1x-claims-40m-profit-from-trump-coin-sparks-debate-on-meme-coin-speculation"
+      ]
+    },
+    {
+      "name": "TJR",
+      "public_handle": "@_TJRTrades",
+      "wallets": [],
+      "status": "unverified_identity_to_wallet",
+      "reported_method_leads": ["price action education", "risk management", "trader network"],
+      "claim_status": "no_complete_public_wallet_history_found",
+      "sources": ["https://x.com/_TJRTrades"]
+    },
+    {
+      "name": "Unipcs / Bonk Guy",
+      "public_handle": "@theunipcs",
+      "wallets": [],
+      "status": "timestamped_calls_only_no_complete_trade_ledger",
+      "reported_method_leads": [
+        "mature ecosystem meme after capitulation",
+        "drawdown survival and renewed attention"
+      ],
+      "claim_status": "USELESS_call_verifiable_BONK_profit_claim_not_fully_verified",
+      "sources": [
+        "https://x.com/theunipcs/status/1932046846827856078",
+        "https://www.bybit.com/en/learn/interviews/unipcs-bonk-guy-interview"
+      ]
+    },
+    {
+      "name": "GCR / Gigantic-Cassocked-Rebirth",
+      "public_handle": "@GCRClassic",
+      "wallets": [
+        "0x398d282487b44b6e53Ce0AebcA3CB60C3B6325E9",
+        "0xC70A4dDdA17dA2A897a827cEbb725a89AE6A7278",
+        "0x210D1827f2ffe45A7702F86F03d2e5777f921925"
+      ],
+      "status": "one_public_two_arkham_attributed_wallets",
+      "reported_method_leads": [
+        "contrarian forced-liquidation entries",
+        "relative weakness and supply analysis",
+        "spot scaling after broad panic"
+      ],
+      "claim_status": "historical_research_only_wallets_may_be_inactive",
+      "sources": [
+        "https://info.arkm.com/research/potential-gcr-addresses-identified",
+        "https://info.arkm.com/research/gigantic-rebirth-crypto-trader"
+      ]
+    }
+  ],
+  "wallet_candidates": [
+    {
+      "label": "Nansen Trump whale",
+      "address": "4EtAJ1p8RjqccEVhEhaYnEgQ6kA4JHR8oYqyLFwARUj6",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "cifwifhatday.sol",
+      "address": "EdCNh8EzETJLFphW8yvdY7rDd8zBiyweiz8DU5gUUUka",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "traderpow",
+      "address": "8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "popchad.sol",
+      "address": "8mZYBV8aPvPCo34CyCmt6fWkZRFviAUoBZr1Bn993gro",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "naseem",
+      "address": "5CP6zv8a17mz91v6rMruVH6ziC5qAL8GFaJzwrX9Fvup",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "shatter.sol",
+      "address": "H2ikJvq8or5MyjvFowD7CDY6fG3Sc2yi4mxTnfovXy3K",
+      "chain": "solana",
+      "status": "candidate_for_forward_observation",
+      "source": "https://nansen.ai/post/top-10-memecoin-wallets-to-track-for-2025"
+    },
+    {
+      "label": "Machi Big Brother negative control",
+      "address": "0x020ca66c30bec2c4fe3861a94e4db4a498a35872",
+      "chain": "ethereum_hyperliquid",
+      "status": "negative_control_never_copy",
+      "source": "https://hyperdash.com/address/0x020ca66c30bec2c4fe3861a94e4db4a498a35872"
+    }
+  ],
+  "historical_influencer_events": [
+    {
+      "actor": "Unipcs / Bonk Guy",
+      "symbol": "USELESS",
+      "mint": "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+      "published_at": "2025-06-09T12:07:18Z",
+      "status": "historical_follower_delay_event_study_only",
+      "sources": [
+        "https://x.com/theunipcs/status/1932046846827856078",
+        "https://www.coinbase.com/en-pt/price/solana-useless-coin-bonk"
+      ]
+    }
+  ],
+  "historical_public_figure_events": [
+    {
+      "actor": "Donald Trump",
+      "symbol": "TRUMP",
+      "mint": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+      "announced_at": "2025-01-18T02:44:00Z",
+      "status": "historical_event_only",
+      "sources": [
+        "https://www.trmlabs.com/resources/blog/tracing-trump",
+        "https://gettrumpmemes.com/"
+      ]
+    },
+    {
+      "actor": "Melania Trump",
+      "symbol": "MELANIA",
+      "mint": "FUAfBo2jgks6gB4Z4LfZkqSZgzNucisEHqnNebaRxM1P",
+      "announced_at": "2025-01-19T21:00:00Z",
+      "status": "historical_event_only",
+      "sources": ["https://melaniameme.com/"]
+    },
+    {
+      "actor": "Faustin-Archange Touadera",
+      "symbol": "CAR",
+      "mint": "7oBYdEhV4GkXC19ZfgAvXpJWp2Rn9pm1Bx2cVNxFpump",
+      "announced_at": "2025-02-10T00:00:00Z",
+      "status": "historical_event_only",
+      "sources": ["https://x.com/FA_Touadera/status/1888722674265764017"]
+    },
+    {
+      "actor": "Javier Milei",
+      "symbol": "LIBRA",
+      "mint": "Bo9jh3wsmcC2AjakLWzNmKJ3SgtZmXEcSaW7L2FAvUsU",
+      "announced_at": "2025-02-14T22:01:00Z",
+      "status": "historical_high_risk_event_only",
+      "sources": [
+        "https://www.trmlabs.com/resources/blog/the-libra-affair-tracking-the-memecoin-that-launched-a-scandal-in-argentina",
+        "https://explorer.solana.com/address/Bo9jh3wsmcC2AjakLWzNmKJ3SgtZmXEcSaW7L2FAvUsU"
+      ]
+    }
+  ]
+}

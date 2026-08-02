@@ -1,0 +1,27 @@
+[system]
+execution_mode = "paper"
+database_path = "data/flight_recorder.db"
+starting_equity_usd = 10.0
+stale_after_seconds = 120
+
+[safety.cex]
+minimum_age_minutes = 10080
+minimum_liquidity_usd = 1000000.0
+maximum_entry_price_impact_pct = 1.0
+maximum_exit_price_impact_pct = 1.5
+maximum_top10_private_holder_pct = 25.0
+
+[safety.solana_emerging]
+minimum_age_minutes = 60
+minimum_liquidity_usd = 50000.0
+maximum_entry_price_impact_pct = 2.0
+maximum_exit_price_impact_pct = 3.0
+maximum_top10_private_holder_pct = 30.0
+
+[risk]
+risk_per_cex_trade_pct = 0.5
+capital_at_risk_per_solana_trade_pct = 0.25
+maximum_daily_loss_pct = 1.0
+maximum_open_positions = 2
+maximum_aggregate_open_risk_pct = 1.0
+consecutive_loss_limit = 3

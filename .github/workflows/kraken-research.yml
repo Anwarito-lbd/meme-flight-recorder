@@ -1,0 +1,154 @@
+name: Kraken research validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Kraken trade-history days to download and convert
+        required: true
+        default: "90"
+      paper_wallet:
+        description: Simulated USD wallet
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+      FT_CONFIG: artifacts/config.kraken.generated.json
+      FT_ANALYSIS_CONFIG: artifacts/config.kraken.analysis.json
+      FT_DATA: artifacts/kraken-data
+      FT_RESULTS: artifacts/results
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,freqtrade]'
+          python -m pytest -q
+          python -m ruff check .
+
+      - name: Resolve current Kraken meme markets
+        run: |
+          mkdir -p artifacts/results artifacts/kraken-data
+          python scripts/select_kraken_pairs.py \
+            --template integrations/freqtrade/config.paper.json \
+            --output "$FT_CONFIG" \
+            --report artifacts/kraken-market-evidence.json \
+            --quote USD \
+            --wallet "${{ inputs.paper_wallet }}"
+          python scripts/select_kraken_pairs.py \
+            --template integrations/freqtrade/config.paper.json \
+            --output "$FT_ANALYSIS_CONFIG" \
+            --report artifacts/kraken-analysis-market-evidence.json \
+            --quote USD \
+            --wallet 10000
+
+      - name: Download genuine Kraken trades and build 15m/1h candles
+        run: |
+          python -m freqtrade download-data \
+            --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
+            --datadir "$FT_DATA" \
+            --days "${{ inputs.days }}" \
+            --timeframes 15m 1h \
+            --dl-trades \
+            --convert \
+            --no-parallel-download \
+            --data-format-ohlcv feather \
+            --data-format-trades feather \
+            2>&1 | tee "$FT_RESULTS/download.log"
+
+      - name: Inventory candles
+        run: |
+          find "$FT_DATA" -type f \( -name '*-15m-*' -o -name '*-1h-*' \) | sort \
+            > "$FT_RESULTS/candle-files.txt"
+          python -m freqtrade list-data \
+            --config "$FT_ANALYSIS_CONFIG" \
+            --datadir "$FT_DATA" \
+            --show-timerange \
+            2>&1 | tee "$FT_RESULTS/data-inventory.log"
+
+      - name: Backtest strict strategy
+        run: |
+          python -m freqtrade backtesting \
+            --config "$FT_ANALYSIS_CONFIG" \
+            --strategy MemeBreakoutRetestStrategy \
+            --strategy-path integrations/freqtrade \
+            --datadir "$FT_DATA" \
+            --timeframe 15m \
+            --fee 0.004 \
+            --cache none \
+            --breakdown month weekday \
+            --export trades \
+            --export-directory "$FT_RESULTS" \
+            --backtest-filename strict-backtest.json \
+            2>&1 | tee "$FT_RESULTS/strict-backtest.log"
+
+      - name: Complete look-ahead analysis
+        id: lookahead
+        continue-on-error: true
+        run: |
+          python -m freqtrade lookahead-analysis \
+            --config "$FT_ANALYSIS_CONFIG" \
+            --strategy MemeBreakoutRetestStrategy \
+            --strategy-path integrations/freqtrade \
+            --datadir "$FT_DATA" \
+            --timeframe 15m \
+            --fee 0.004 \
+            --minimum-trade-amount 10 \
+            --targeted-trade-amount 100 \
+            --lookahead-analysis-exportfilename "$FT_RESULTS/lookahead.csv" \
+            2>&1 | tee "$FT_RESULTS/lookahead.log"
+
+      - name: Record validation metadata
+        if: always()
+        run: |
+          {
+            echo "# Kraken research run"
+            echo
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Requested history: ${{ inputs.days }} days"
+            echo "- Paper wallet: \$${{ inputs.paper_wallet }}"
+            echo "- Signal-validity analysis wallet: \$10000"
+            echo "- Look-ahead step: ${{ steps.lookahead.outcome }}"
+            echo "- Generated: $(date -u --iso-8601=seconds)"
+          } | tee "$FT_RESULTS/run-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          python -m pip freeze > "$FT_RESULTS/dependencies.txt"
+
+      - name: Enforce look-ahead completion
+        if: always()
+        env:
+          LOOKAHEAD_OUTCOME: ${{ steps.lookahead.outcome }}
+        run: |
+          python scripts/validate_lookahead.py \
+            --csv "$FT_RESULTS/lookahead.csv" \
+            --log "$FT_RESULTS/lookahead.log" \
+            --outcome "$LOOKAHEAD_OUTCOME" \
+            --minimum-signals 10
+
+      - name: Remove raw trades and upload reproducible evidence
+        if: always()
+        run: |
+          find "$FT_DATA" -type f -iname '*trades*' -delete
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kraken-research-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meme-flight-recorder"
+version = "0.4.0"
+description = "Paper-only meme-coin lifecycle recorder, safety engine, and shadow execution API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+freqtrade = ["freqtrade==2026.7"]
+
+[project.scripts]
+meme-recorder = "meme_flight_recorder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["meme_flight_recorder"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

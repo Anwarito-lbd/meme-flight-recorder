@@ -1,0 +1,31 @@
+{
+  "chain": "solana",
+  "address": "REPLACE_WITH_EXACT_MINT",
+  "symbol": "MEME",
+  "name": "Example Meme",
+  "verified": true,
+  "universe": "solana_emerging",
+  "observed_at": "2026-08-02T15:00:00Z",
+  "provider_observed_at": "2026-08-02T15:00:00Z",
+  "facts": {
+    "age_minutes": 120,
+    "liquidity_usd": 100000,
+    "top10_private_holder_pct": 20,
+    "mint_authority_disabled": true,
+    "freeze_authority_disabled": true,
+    "developer_selling": false,
+    "connected_wallet_risk": false,
+    "entry_route_found": true,
+    "exit_route_found": true,
+    "transaction_simulation_ok": true,
+    "entry_price_impact_pct": 0.5,
+    "exit_price_impact_pct": 1.0,
+    "graduated": true,
+    "liquidity_growth_pct": 20,
+    "buyer_growth_pct": 30,
+    "holder_growth_pct": 15,
+    "social_acceleration": 45,
+    "price_momentum": 10,
+    "market_regime": 0.25
+  }
+}
