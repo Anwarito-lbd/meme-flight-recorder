@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "select_kraken_pairs.py"
+WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "kraken-research.yml"
 SPEC = importlib.util.spec_from_file_location("select_kraken_pairs", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -45,3 +46,9 @@ def test_generated_config_is_always_credentialless_spot_dry_run() -> None:
     assert config["exchange"]["pair_whitelist"] == ["DOGE/USD"]
     assert config["exchange"]["key"] == ""
     assert config["exchange"]["secret"] == ""
+
+
+def test_kraken_workflow_propagates_pipeline_failures_and_uses_project_userdir() -> None:
+    workflow = WORKFLOW.read_text()
+    assert "shell: bash --noprofile --norc -eo pipefail {0}" in workflow
+    assert workflow.count("--userdir integrations/freqtrade") == 4

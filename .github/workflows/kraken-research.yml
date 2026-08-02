@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -78,6 +82,7 @@ jobs:
             > "$FT_RESULTS/candle-files.txt"
           python -m freqtrade list-data \
             --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
             --datadir "$FT_DATA" \
             --show-timerange \
             2>&1 | tee "$FT_RESULTS/data-inventory.log"
@@ -86,6 +91,7 @@ jobs:
         run: |
           python -m freqtrade backtesting \
             --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
             --strategy MemeBreakoutRetestStrategy \
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
@@ -104,6 +110,7 @@ jobs:
         run: |
           python -m freqtrade lookahead-analysis \
             --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
             --strategy MemeBreakoutRetestStrategy \
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
