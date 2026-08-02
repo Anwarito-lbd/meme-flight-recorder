@@ -55,7 +55,13 @@ def select_active_spot_pairs(
     return selected, evidence
 
 
-def build_config(template: dict[str, Any], pairs: list[str], quote: str, wallet: float) -> dict:
+def build_config(
+    template: dict[str, Any],
+    pairs: list[str],
+    quote: str,
+    wallet: float,
+    market_order_pricing: bool = False,
+) -> dict:
     if not pairs:
         raise ValueError("Kraken returned no active research pairs")
     config = json.loads(json.dumps(template))
@@ -67,6 +73,9 @@ def build_config(template: dict[str, Any], pairs: list[str], quote: str, wallet:
     config["exchange"]["key"] = ""
     config["exchange"]["secret"] = ""
     config["exchange"]["pair_whitelist"] = pairs
+    if market_order_pricing:
+        config["entry_pricing"]["price_side"] = "other"
+        config["exit_pricing"]["price_side"] = "other"
     return config
 
 
@@ -77,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--quote", default="USD")
     parser.add_argument("--wallet", type=float, default=10.0)
+    parser.add_argument("--market-order-pricing", action="store_true")
     parser.add_argument("--bases", nargs="*", default=list(DEFAULT_BASES))
     return parser.parse_args()
 
@@ -89,7 +99,13 @@ def main() -> None:
     markets = exchange.load_markets()
     pairs, evidence = select_active_spot_pairs(markets, tuple(args.bases), args.quote)
     template = json.loads(args.template.read_text(encoding="utf-8"))
-    config = build_config(template, pairs, args.quote, args.wallet)
+    config = build_config(
+        template,
+        pairs,
+        args.quote,
+        args.wallet,
+        market_order_pricing=args.market_order_pricing,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

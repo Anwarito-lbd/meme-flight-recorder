@@ -15,14 +15,20 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       PYTHONUNBUFFERED: "1"
+      REQUESTED_DAYS: ${{ inputs.days }}
       FT_CONFIG: artifacts/config.kraken.generated.json
       FT_ANALYSIS_CONFIG: artifacts/config.kraken.analysis.json
+      FT_LOOKAHEAD_CONFIG: artifacts/config.kraken.lookahead.json
       FT_DATA: artifacts/kraken-data
       FT_RESULTS: artifacts/results
 
@@ -33,6 +39,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Define reproducible UTC timerange
+        run: |
+          if [[ ! "$REQUESTED_DAYS" =~ ^[0-9]{1,4}$ ]] || (( REQUESTED_DAYS < 1 )); then
+            echo "days must be an integer from 1 to 9999" >&2
+            exit 2
+          fi
+          timerange_start="$(date -u -d "$REQUESTED_DAYS days ago" +%Y%m%d)"
+          timerange_end="$(date -u -d 'tomorrow' +%Y%m%d)"
+          echo "FT_TIMERANGE=${timerange_start}-${timerange_end}" >> "$GITHUB_ENV"
 
       - name: Install and test
         run: |
@@ -56,6 +72,13 @@ jobs:
             --report artifacts/kraken-analysis-market-evidence.json \
             --quote USD \
             --wallet 10000
+          python scripts/select_kraken_pairs.py \
+            --template integrations/freqtrade/config.paper.json \
+            --output "$FT_LOOKAHEAD_CONFIG" \
+            --report artifacts/kraken-lookahead-market-evidence.json \
+            --quote USD \
+            --wallet 10000 \
+            --market-order-pricing
 
       - name: Download genuine Kraken trades and build 15m/1h candles
         run: |
@@ -78,6 +101,7 @@ jobs:
             > "$FT_RESULTS/candle-files.txt"
           python -m freqtrade list-data \
             --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
             --datadir "$FT_DATA" \
             --show-timerange \
             2>&1 | tee "$FT_RESULTS/data-inventory.log"
@@ -86,10 +110,12 @@ jobs:
         run: |
           python -m freqtrade backtesting \
             --config "$FT_ANALYSIS_CONFIG" \
+            --userdir integrations/freqtrade \
             --strategy MemeBreakoutRetestStrategy \
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
             --timeframe 15m \
+            --timerange "$FT_TIMERANGE" \
             --fee 0.004 \
             --cache none \
             --breakdown month weekday \
@@ -103,11 +129,13 @@ jobs:
         continue-on-error: true
         run: |
           python -m freqtrade lookahead-analysis \
-            --config "$FT_ANALYSIS_CONFIG" \
+            --config "$FT_LOOKAHEAD_CONFIG" \
+            --userdir integrations/freqtrade \
             --strategy MemeBreakoutRetestStrategy \
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
             --timeframe 15m \
+            --timerange "$FT_TIMERANGE" \
             --fee 0.004 \
             --minimum-trade-amount 10 \
             --targeted-trade-amount 100 \
@@ -122,6 +150,7 @@ jobs:
             echo
             echo "- Commit: $GITHUB_SHA"
             echo "- Requested history: ${{ inputs.days }} days"
+            echo "- Analysis timerange: $FT_TIMERANGE"
             echo "- Paper wallet: \$${{ inputs.paper_wallet }}"
             echo "- Signal-validity analysis wallet: \$10000"
             echo "- Look-ahead step: ${{ steps.lookahead.outcome }}"
