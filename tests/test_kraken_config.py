@@ -52,3 +52,5 @@ def test_kraken_workflow_propagates_pipeline_failures_and_uses_project_userdir()
     workflow = WORKFLOW.read_text()
     assert "shell: bash --noprofile --norc -eo pipefail {0}" in workflow
     assert workflow.count("--userdir integrations/freqtrade") == 4
+    assert "REQUESTED_DAYS: ${{ inputs.days }}" in workflow
+    assert workflow.count('--timerange "$FT_TIMERANGE"') == 2

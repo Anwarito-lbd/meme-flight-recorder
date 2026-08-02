@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONUNBUFFERED: "1"
+      REQUESTED_DAYS: ${{ inputs.days }}
       FT_CONFIG: artifacts/config.kraken.generated.json
       FT_ANALYSIS_CONFIG: artifacts/config.kraken.analysis.json
       FT_DATA: artifacts/kraken-data
@@ -37,6 +38,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Define reproducible UTC timerange
+        run: |
+          if [[ ! "$REQUESTED_DAYS" =~ ^[0-9]{1,4}$ ]] || (( REQUESTED_DAYS < 1 )); then
+            echo "days must be an integer from 1 to 9999" >&2
+            exit 2
+          fi
+          timerange_start="$(date -u -d "$REQUESTED_DAYS days ago" +%Y%m%d)"
+          timerange_end="$(date -u -d 'tomorrow' +%Y%m%d)"
+          echo "FT_TIMERANGE=${timerange_start}-${timerange_end}" >> "$GITHUB_ENV"
 
       - name: Install and test
         run: |
@@ -96,6 +107,7 @@ jobs:
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
             --timeframe 15m \
+            --timerange "$FT_TIMERANGE" \
             --fee 0.004 \
             --cache none \
             --breakdown month weekday \
@@ -115,6 +127,7 @@ jobs:
             --strategy-path integrations/freqtrade \
             --datadir "$FT_DATA" \
             --timeframe 15m \
+            --timerange "$FT_TIMERANGE" \
             --fee 0.004 \
             --minimum-trade-amount 10 \
             --targeted-trade-amount 100 \
@@ -129,6 +142,7 @@ jobs:
             echo
             echo "- Commit: $GITHUB_SHA"
             echo "- Requested history: ${{ inputs.days }} days"
+            echo "- Analysis timerange: $FT_TIMERANGE"
             echo "- Paper wallet: \$${{ inputs.paper_wallet }}"
             echo "- Signal-validity analysis wallet: \$10000"
             echo "- Look-ahead step: ${{ steps.lookahead.outcome }}"
