@@ -48,9 +48,23 @@ def test_generated_config_is_always_credentialless_spot_dry_run() -> None:
     assert config["exchange"]["secret"] == ""
 
 
+def test_market_order_analysis_uses_compatible_pricing_without_changing_template() -> None:
+    template = {
+        "entry_pricing": {"price_side": "same"},
+        "exit_pricing": {"price_side": "same"},
+        "exchange": {},
+    }
+    config = MODULE.build_config(template, ["DOGE/USD"], "USD", 10_000, True)
+    assert config["entry_pricing"]["price_side"] == "other"
+    assert config["exit_pricing"]["price_side"] == "other"
+    assert template["entry_pricing"]["price_side"] == "same"
+
+
 def test_kraken_workflow_propagates_pipeline_failures_and_uses_project_userdir() -> None:
     workflow = WORKFLOW.read_text()
     assert "shell: bash --noprofile --norc -eo pipefail {0}" in workflow
     assert workflow.count("--userdir integrations/freqtrade") == 4
     assert "REQUESTED_DAYS: ${{ inputs.days }}" in workflow
     assert workflow.count('--timerange "$FT_TIMERANGE"') == 2
+    assert '--config "$FT_LOOKAHEAD_CONFIG"' in workflow
+    assert "--market-order-pricing" in workflow

@@ -28,6 +28,7 @@ jobs:
       REQUESTED_DAYS: ${{ inputs.days }}
       FT_CONFIG: artifacts/config.kraken.generated.json
       FT_ANALYSIS_CONFIG: artifacts/config.kraken.analysis.json
+      FT_LOOKAHEAD_CONFIG: artifacts/config.kraken.lookahead.json
       FT_DATA: artifacts/kraken-data
       FT_RESULTS: artifacts/results
 
@@ -71,6 +72,13 @@ jobs:
             --report artifacts/kraken-analysis-market-evidence.json \
             --quote USD \
             --wallet 10000
+          python scripts/select_kraken_pairs.py \
+            --template integrations/freqtrade/config.paper.json \
+            --output "$FT_LOOKAHEAD_CONFIG" \
+            --report artifacts/kraken-lookahead-market-evidence.json \
+            --quote USD \
+            --wallet 10000 \
+            --market-order-pricing
 
       - name: Download genuine Kraken trades and build 15m/1h candles
         run: |
@@ -121,7 +129,7 @@ jobs:
         continue-on-error: true
         run: |
           python -m freqtrade lookahead-analysis \
-            --config "$FT_ANALYSIS_CONFIG" \
+            --config "$FT_LOOKAHEAD_CONFIG" \
             --userdir integrations/freqtrade \
             --strategy MemeBreakoutRetestStrategy \
             --strategy-path integrations/freqtrade \
