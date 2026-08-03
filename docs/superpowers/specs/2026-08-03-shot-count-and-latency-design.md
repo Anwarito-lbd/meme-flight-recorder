@@ -44,7 +44,10 @@ which is the quantity that decides whether an account survives a fat tail.
 
 Sweep the equity fraction `f` from 0.5% to 25% and report, for each: growth rate
 per trade, expected equity after 30 and 300 trades, maximum drawdown over the
-measured sequence, and probability of falling below the `UNFUNDED` threshold.
+measured sequence, and probability of falling below the `UNFUNDED` threshold of
+$30 (the level below which `risk.py` already refuses to size a position, so
+crossing it is functional ruin for this system regardless of the remaining
+balance).
 
 **The cost model must be measured, not assumed.** The 3%-per-leg figure used
 throughout the backtests was never derived from anything. Real cost at position
@@ -55,8 +58,13 @@ they cannot be folded into a percentage. Impact comes from the Jupiter quotes
 `enrichment.py` already fetches; fees are configurable with documented defaults.
 
 Then re-derive `MicroCapitalLimits.minimum_viable_position_usd`, currently 3.0 by
-choice rather than by measurement, as the size at which total cost exceeds a
-stated share of the position.
+choice rather than by measurement. The floor is defined as **the smallest
+position whose modelled round-trip cost is at most 10% of the position value**.
+Ten percent is itself a choice and is recorded as one, but it is anchored: the
+existing `ExitLimits.round_trip_cost_pct` already treats 6% as the cost a trade
+must clear to break even, and a floor set where costs approach a fifth of the
+stake would make the break-even move larger than most of the measured
+distribution's upside.
 
 **Decision rule, fixed before any number is seen:**
 
