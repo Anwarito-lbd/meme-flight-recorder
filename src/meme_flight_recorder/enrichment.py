@@ -98,13 +98,27 @@ def enrich_snapshot(
             resolved.extend(
                 ("identity_verified", "mint_authority_disabled", "freeze_authority_disabled")
             )
-            # Only override concentration when the chain actually answered;
-            # getTokenLargestAccounts is refused for some high-account mints.
+            # getTokenLargestAccounts returns a *gross* figure that counts the
+            # AMM pool's own token account. For a freshly migrated token the
+            # pool holds most of the supply, so gross top-10 approaches 100%
+            # for perfectly ordinary tokens. Writing it into
+            # top10_private_holder_pct -- which means concentration *excluding*
+            # infrastructure -- would reject every migrated token on a number
+            # that describes the pool rather than any holder.
+            #
+            # It is still useful evidence, so it is recorded under its own name
+            # and left for the cluster tier to interpret. Deriving a genuine
+            # private figure requires identifying and subtracting the pool
+            # accounts, which is tracked separately.
             if evidence.gross_top10_account_pct is not None:
-                updates["top10_private_holder_pct"] = evidence.gross_top10_account_pct
-                resolved.append("top10_private_holder_pct")
+                updates["raw_evidence"] = {
+                    **snapshot.raw_evidence,
+                    "gross_top10_account_pct": evidence.gross_top10_account_pct,
+                    "largest_accounts_observed": evidence.largest_accounts_observed,
+                }
+                resolved.append("gross_top10_account_pct")
             else:
-                unresolved.append("top10_private_holder_pct")
+                unresolved.append("gross_top10_account_pct")
                 if evidence.largest_accounts_error:
                     errors["largest_accounts"] = evidence.largest_accounts_error
     else:

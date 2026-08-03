@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .env import load_env
+
 
 @dataclass(frozen=True)
 class SafetyLimits:
@@ -59,6 +61,13 @@ class MicroCapitalLimits:
 
     equity_threshold_usd: float = 100.0
     max_position_usd: float = 10.0
+    # Position size tracks account funding rather than sitting at a fixed
+    # dollar cap. A flat $10 cap is a quarter of a $40 account but half of a
+    # $20 one, so the same configuration means very different risk at
+    # different funding levels. The percentage binds on small accounts and the
+    # dollar cap binds as funding grows, until the tier threshold hands over
+    # to percentage-of-equity sizing entirely.
+    position_pct_of_equity: float = 25.0
     minimum_viable_position_usd: float = 3.0
     maximum_round_trip_cost_pct: float = 8.0
     maximum_pool_share_pct: float = 0.5
@@ -104,6 +113,9 @@ def _safety(values: dict[str, Any]) -> SafetyLimits:
 
 
 def load_settings(path: str | Path | None = None) -> Settings:
+    # Every entry point reaches settings before it reaches a provider, so this
+    # is the one place that guarantees .env is applied before any os.getenv.
+    load_env()
     config_path = Path(path or os.getenv("MFR_CONFIG", "config/default.toml"))
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)

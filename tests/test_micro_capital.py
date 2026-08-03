@@ -11,7 +11,12 @@ from meme_flight_recorder.models import (
     TokenSnapshot,
     Universe,
 )
-from meme_flight_recorder.risk import PortfolioState, RiskEngine
+from meme_flight_recorder.risk import (
+    CapitalTier,
+    PortfolioState,
+    RiskEngine,
+    capital_tier,
+)
 from meme_flight_recorder.safety import SafetyEngine
 
 RISK = RiskLimits(
@@ -102,6 +107,56 @@ class MicroCapitalSizingTests(unittest.TestCase):
         )
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "aggregate_open_position_exceeded")
+
+
+class AdaptiveFundingTests(unittest.TestCase):
+    """Sizing tracks account funding rather than a fixed dollar cap."""
+
+    def setUp(self) -> None:
+        self.micro = MicroCapitalLimits()
+        self.engine = RiskEngine(RISK, self.micro)
+
+    def _position(self, equity: float) -> float:
+        decision = self.engine.approve(
+            Universe.SOLANA_EMERGING,
+            PortfolioState(equity_usd=equity),
+            1.0,
+            pool_liquidity_usd=10_000_000.0,
+            estimated_round_trip_cost_pct=4.0,
+        )
+        self.assertTrue(decision.approved, decision.reason)
+        return decision.position_value_usd
+
+    def test_position_scales_with_funding(self):
+        self.assertEqual(self._position(20.0), 5.0)
+        self.assertEqual(self._position(40.0), 10.0)
+
+    def test_dollar_cap_binds_once_the_account_grows(self):
+        """Percentage binds when small, the cap takes over as funding rises."""
+        self.assertEqual(self._position(80.0), 10.0)
+
+    def test_a_flat_cap_would_have_risked_half_a_small_account(self):
+        """Regression guard: $10 is 25% of $40 but 50% of $20."""
+        self.assertLess(self._position(20.0), self.micro.max_position_usd)
+
+    def test_tier_is_derived_from_equity(self):
+        self.assertEqual(capital_tier(10.0, self.micro), CapitalTier.UNFUNDED)
+        self.assertEqual(capital_tier(40.0, self.micro), CapitalTier.MICRO)
+        self.assertEqual(capital_tier(5_000.0, self.micro), CapitalTier.STANDARD)
+
+    def test_unfunded_account_is_named_not_silently_undersized(self):
+        decision = self.engine.approve(
+            Universe.SOLANA_EMERGING,
+            PortfolioState(equity_usd=10.0),
+            1.0,
+            pool_liquidity_usd=10_000.0,
+            estimated_round_trip_cost_pct=4.0,
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "position_below_viable_minimum")
+
+    def test_engine_without_micro_limits_is_always_standard(self):
+        self.assertEqual(capital_tier(1.0, None), CapitalTier.STANDARD)
 
 
 class PoolRelativeLiquidityTests(unittest.TestCase):

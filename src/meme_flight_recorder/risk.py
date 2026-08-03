@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .config import MicroCapitalLimits, RiskLimits
 from .models import Universe
@@ -14,6 +15,32 @@ class PortfolioState:
     aggregate_open_risk_usd: float = 0.0
     consecutive_losses: int = 0
     kill_switch: bool = False
+
+
+class CapitalTier(StrEnum):
+    """How the engine sizes at a given funding level.
+
+    The tier is derived from equity rather than configured, so the system
+    adapts as the account is funded or drawn down instead of needing a manual
+    switch at the moment it matters least.
+    """
+
+    UNFUNDED = "unfunded"
+    MICRO = "micro"
+    STANDARD = "standard"
+
+
+def capital_tier(equity_usd: float, micro: MicroCapitalLimits | None) -> CapitalTier:
+    if micro is None:
+        return CapitalTier.STANDARD
+    if equity_usd * micro.position_pct_of_equity / 100 < micro.minimum_viable_position_usd:
+        # Too small to fund a position that can be executed and exited without
+        # costs dominating. Naming this state is more useful than silently
+        # producing sizes that would never fill.
+        return CapitalTier.UNFUNDED
+    if equity_usd < micro.equity_threshold_usd:
+        return CapitalTier.MICRO
+    return CapitalTier.STANDARD
 
 
 @dataclass(frozen=True)
@@ -61,7 +88,16 @@ class RiskEngine:
             # because a thin meme coin can gap to zero or stop being sellable
             # before any stop can fill. Percentage-of-equity sizing at this
             # scale produces positions too small to execute.
-            position = min(self.micro.max_position_usd, state.equity_usd)
+            #
+            # Size adapts to funding: the percentage binds while the account is
+            # small, the dollar cap binds as it grows. An account too small to
+            # fund a viable position is rejected outright rather than being
+            # handed a position it cannot execute or exit.
+            position = min(
+                self.micro.max_position_usd,
+                state.equity_usd * self.micro.position_pct_of_equity / 100,
+                state.equity_usd,
+            )
             risk = position
             if position < self.micro.minimum_viable_position_usd:
                 return RiskDecision(False, "position_below_viable_minimum")

@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import UTC, datetime
-
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from meme_flight_recorder.clusters import assess_vendor_labels
 from meme_flight_recorder.config import load_settings
