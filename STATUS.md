@@ -65,6 +65,35 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## Current blocker: Jupiter's quota, and the collector was making it permanent
+
+Nothing can open a position while Jupiter returns 429. Without route and impact
+evidence the fail-closed gates reject every candidate, and the rejection is
+journalled indistinguishably from a token that genuinely failed -- a rate limit
+recorded as evidence about tokens.
+
+**The collector was causing its own outage.** Rate-limited, a cycle still issued
+two quote calls per candidate: ~120 requests that all failed and kept the
+allowance pinned, so it never recovered between cycles. Observed as forty-plus
+minutes of continuous 429s across repeated runs.
+
+`JupiterQuoteProvider` now opens a circuit breaker after repeated 429s and skips
+quoting for a cooldown. Candidates in that window are recorded with unknown
+routes exactly as before, but the requests are not spent, which is what allows
+recovery.
+
+As of this writing a *single* request still returns 429 after ~45 minutes, so
+this is an hourly or daily quota rather than a per-minute window. That is an
+external constraint, not a code problem. Options: wait for the quota to reset, or
+add a Jupiter API key for the paid endpoint.
+
+**Deliberately not done:** estimating price impact from constant-product maths
+against DexScreener pool depth. It would make candidates pass, and it would
+substitute an estimate for a quote inside a gate whose purpose is to verify a
+real executable route. The gate would read as verified while being weaker than
+its name. If a fallback is ever added it must be labelled as estimated and must
+not satisfy the same gate.
+
 ## The first real wallet measurement: a "top trader" who is not one
 
 Stage 8 had never been run on a real wallet. Doing so required fixing two things
