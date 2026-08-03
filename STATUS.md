@@ -18,19 +18,39 @@ own judgement was any good.
 The system completes trades now, and the first measured expectancy is
 **negative**. Real candles, costs charged on both legs, $4 positions:
 
-| timeframe | trades | win rate | expectancy | profit factor |
-|---|---:|---:|---:|---:|
-| 15m | 21 | 0% | -$0.41 | 0.000 |
-| 1h | 12 | 17% | -$0.27 | 0.153 |
-| 4h | 11 | 18% | -$0.23 | 0.396 |
-| 1d | 2 | 50% | +$0.08 | 2.823 |
+Re-measured 2026-08-03 after fixing the timeframe sweep (see below):
 
-Expectancy improves monotonically with holding period, which fits costs being
-large relative to short-timeframe moves. Every sample big enough to read is
-negative and the only positive cell has two trades. **Do not trade this live.**
+| timeframe | trades | win rate | expectancy | profit factor | tokens with too few candles |
+|---|---:|---:|---:|---:|---:|
+| 15m | 15 | 0% | -$0.63 | 0.000 | 0 of 12 |
+| 1h | 7 | 0% | -$0.61 | 0.000 | 1 of 12 |
+| 4h | 4 | 25% | -$0.23 | 0.394 | 3 of 12 |
+| 1d | 1 | 0% | -$0.24 | 0.000 | 9 of 12 |
+
+Every timeframe is negative. The apparent improvement with holding period is
+still visible, but the last column explains why it can never be confirmed on this
+population: **trending Solana meme pools are too young to have daily candles.**
+Nine of twelve tokens could not supply 40 daily bars. The earlier `1d` cell of
+`+$0.08` on n=2 was not a promising signal, it was two tokens that happened to be
+old enough. A daily strategy cannot be tested against tokens that are days old,
+and that is a structural limit of the population rather than a sampling accident.
 
 These tokens came from a *trending* feed, which by construction contains things
-that already worked, so even these numbers are an upper bound.
+that already worked, so even these numbers are an upper bound. **Do not trade
+this live.**
+
+The deployer-gate change below does **not** appear in these numbers: this
+backtest samples CoinGecko trending pools and applies only `RiskEngine`, never
+the cluster gates. Nothing here tests it.
+
+**A defect this sweep exposed.** `backtest_strategy.py` took `--aggregate` and
+always asked the provider's *minute* path, so `--aggregate 60` raised, every
+token was skipped, and the script printed "the entry rule found no qualifying
+setup ... which is a finding". It was not a finding; it was zero data reported as
+a result — the same failure this project caught once before. The script now takes
+`--timeframe {5m,15m,1h,4h,12h,1d}`, maps to the provider's own path, prints a
+reconciling denominator, and exits non-zero rather than drawing a conclusion when
+candles are missing.
 
 ## Constraints that shape every decision
 

@@ -151,12 +151,33 @@ def backtest_token(
     return trades
 
 
+# The provider exposes a separate path per timeframe and each accepts only its
+# own aggregates, so "60 minutes" is not a request it can answer -- an hourly
+# candle is `hour/1`, not `minute/60`. Naming the timeframes here means a sweep
+# cannot silently ask for something unfetchable and read the resulting silence
+# as a result.
+TIMEFRAMES: dict[str, tuple[str, int]] = {
+    "5m": ("minute", 5),
+    "15m": ("minute", 15),
+    "1h": ("hour", 1),
+    "4h": ("hour", 4),
+    "12h": ("hour", 12),
+    "1d": ("day", 1),
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tokens", type=int, default=15)
-    parser.add_argument("--aggregate", type=int, default=15, help="Candle minutes.")
+    parser.add_argument(
+        "--timeframe",
+        choices=sorted(TIMEFRAMES),
+        default="15m",
+        help="Candle size. Maps to the provider's own timeframe path and aggregate.",
+    )
     parser.add_argument("--cost-pct", type=float, default=3.0)
     arguments = parser.parse_args()
+    timeframe, aggregate = TIMEFRAMES[arguments.timeframe]
 
     settings = load_settings()
     provider = CoinGeckoProvider()
@@ -165,7 +186,20 @@ def main() -> int:
     movers, skipped = select_movers(provider.trending_solana_pools())
     movers = movers[: arguments.tokens]
     print(f"{len(movers)} tokens sampled from trending pools (skipped: {skipped})")
-    print(f"equity ${settings.starting_equity_usd:.2f}, costs {arguments.cost_pct}% per leg\n")
+    print(
+        f"equity ${settings.starting_equity_usd:.2f}, costs {arguments.cost_pct}% per leg, "
+        f"candles {arguments.timeframe} ({timeframe}/{aggregate})\n"
+    )
+
+    # Every sampled token lands in exactly one of these. Without the tally, a run
+    # where the provider returned nothing prints the same "no trades" line as a
+    # run where the strategy genuinely found no setup, and the two have opposite
+    # meanings.
+    risk_rejected = 0
+    candles_unavailable = 0
+    too_few_candles = 0
+    no_setup = 0
+    traded = 0
 
     all_trades: list[TradeSummary] = []
     for pool in movers:
@@ -179,20 +213,23 @@ def main() -> int:
             estimated_round_trip_cost_pct=arguments.cost_pct * 2,
         )
         if not approval.approved:
+            risk_rejected += 1
             print(f"  {pool.symbol:<14} skipped: {approval.reason}")
             continue
         try:
             payload = provider.pool_ohlcv(
-                pool.pool_address, aggregate=arguments.aggregate, limit=1000
+                pool.pool_address, aggregate=aggregate, limit=1000, timeframe=timeframe
             )
         except Exception as error:  # noqa: BLE001
-            print(f"  {pool.symbol:<14} candles unavailable: {type(error).__name__}")
+            candles_unavailable += 1
+            print(f"  {pool.symbol:<14} candles unavailable: {type(error).__name__}: {error}")
             continue
 
         candles = to_candles(
             (payload.get("data") or {}).get("attributes", {}).get("ohlcv_list") or []
         )
         if len(candles) < 40:
+            too_few_candles += 1
             print(f"  {pool.symbol:<14} only {len(candles)} candles, skipped")
             continue
 
@@ -207,12 +244,33 @@ def main() -> int:
             EntryLimits(),
         )
         all_trades.extend(trades)
+        if trades:
+            traded += 1
+        else:
+            no_setup += 1
         print(f"  {pool.symbol:<14} {len(candles):>4} candles -> {len(trades)} complete trades")
 
     print()
+    accounted = risk_rejected + candles_unavailable + too_few_candles + no_setup + traded
+    print(
+        f"denominator: {risk_rejected} risk-rejected + {candles_unavailable} no candles "
+        f"+ {too_few_candles} too few candles"
+    )
+    print(f"           + {no_setup} no setup + {traded} traded = {accounted} of {len(movers)}\n")
+
     if not all_trades:
-        print("No complete trades. The entry rule found no qualifying setup in this sample,")
-        print("which is a finding: the structure it requires is rare in this population.")
+        # Which of these two it is decides whether the strategy or the data is
+        # the problem, and they are not distinguishable from the trade count.
+        if candles_unavailable or too_few_candles:
+            print(
+                f"No complete trades, and {candles_unavailable + too_few_candles} of "
+                f"{len(movers)} tokens returned no usable candles."
+            )
+            print("This is NOT evidence about the strategy. It is missing data.")
+            print("Fix the feed before reading anything into the absence of trades.")
+            return 1
+        print("No complete trades, and every token returned usable candles.")
+        print("That is a finding: the structure this entry rule requires is rare here.")
         return 0
 
     results = [trade.realised_usd for trade in all_trades]
