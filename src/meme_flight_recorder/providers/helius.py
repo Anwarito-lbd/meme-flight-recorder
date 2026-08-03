@@ -20,6 +20,12 @@ class MintEvidence:
     largest_accounts_observed: int
     largest_accounts_error: str | None
     raw: dict[str, Any]
+    # The program that owns the mint decides whether transfers can carry custom
+    # logic at all. Classic SPL Token has no such capability; Token-2022 does,
+    # through extensions, so both facts are required to reason about whether a
+    # sell can be blocked by the contract.
+    program_id: str = ""
+    extensions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +159,12 @@ class HeliusProvider:
             largest_accounts_observed=len(accounts),
             largest_accounts_error=largest_error,
             raw={"account": account, "supply": supply, "largest_accounts": largest},
+            program_id=str(value.get("owner", "")),
+            extensions=tuple(
+                str(extension.get("extension", ""))
+                for extension in (info.get("extensions") or [])
+                if extension.get("extension")
+            ),
         )
 
     def simulate_unsigned_transaction(

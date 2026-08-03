@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from .models import TokenSnapshot
+from .transferability import assess_transferability
 
 # Native SOL, used as the quote asset for round-trip route evidence.
 WRAPPED_SOL = "So11111111111111111111111111111111111111112"
@@ -87,7 +88,12 @@ def enrich_snapshot(
         except Exception as error:  # noqa: BLE001 - provider failure must not pass a gate
             errors["mint_evidence"] = f"{type(error).__name__}: {error}"
             unresolved.extend(
-                ("identity_verified", "mint_authority_disabled", "freeze_authority_disabled")
+                (
+                    "identity_verified",
+                    "mint_authority_disabled",
+                    "freeze_authority_disabled",
+                    "transaction_simulation_ok",
+                )
             )
         else:
             # mint_evidence raises unless the address really is an SPL mint, so
@@ -98,6 +104,27 @@ def enrich_snapshot(
             resolved.extend(
                 ("identity_verified", "mint_authority_disabled", "freeze_authority_disabled")
             )
+
+            # Whether the token's own program can block a sale is decidable from
+            # account data for classic SPL and Token-2022 mints. See
+            # transferability.py for why this is preferred over simulating a
+            # sale, which returns ambiguous errors and would produce confident
+            # false accusations.
+            transfer = assess_transferability(
+                evidence.program_id,
+                evidence.extensions,
+                evidence.freeze_authority_disabled,
+            )
+            updates["transaction_simulation_ok"] = transfer.sellable
+            if transfer.sellable is None:
+                unresolved.append("transaction_simulation_ok")
+            else:
+                resolved.append("transaction_simulation_ok")
+            transfer_evidence = {
+                "transferability": transfer.verdict.value,
+                "transferability_reasons": list(transfer.reasons),
+                "token_program_id": transfer.program_id,
+            }
             # getTokenLargestAccounts returns a *gross* figure that counts the
             # AMM pool's own token account. For a freshly migrated token the
             # pool holds most of the supply, so gross top-10 approaches 100%
@@ -111,19 +138,24 @@ def enrich_snapshot(
             # private figure requires identifying and subtracting the pool
             # accounts, which is tracked separately.
             if evidence.gross_top10_account_pct is not None:
-                updates["raw_evidence"] = {
-                    **snapshot.raw_evidence,
-                    "gross_top10_account_pct": evidence.gross_top10_account_pct,
-                    "largest_accounts_observed": evidence.largest_accounts_observed,
-                }
+                transfer_evidence["gross_top10_account_pct"] = evidence.gross_top10_account_pct
+                transfer_evidence["largest_accounts_observed"] = (
+                    evidence.largest_accounts_observed
+                )
                 resolved.append("gross_top10_account_pct")
             else:
                 unresolved.append("gross_top10_account_pct")
                 if evidence.largest_accounts_error:
                     errors["largest_accounts"] = evidence.largest_accounts_error
+            updates["raw_evidence"] = {**snapshot.raw_evidence, **transfer_evidence}
     else:
         unresolved.extend(
-            ("identity_verified", "mint_authority_disabled", "freeze_authority_disabled")
+            (
+                "identity_verified",
+                "mint_authority_disabled",
+                "freeze_authority_disabled",
+                "transaction_simulation_ok",
+            )
         )
 
     if quote_provider is not None and mint:
