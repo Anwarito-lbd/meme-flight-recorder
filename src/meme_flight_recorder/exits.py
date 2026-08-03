@@ -167,8 +167,19 @@ def evaluate_exit(
     if price is not None:
         if position.stop_price > 0 and price <= position.stop_price:
             return _exit(ExitReason.STOP_HIT, 1.0, f"price={price}")
-        if position.breakout_level > 0 and price < position.breakout_level:
-            return _exit(ExitReason.THESIS_BROKEN, 1.0, f"below_level={position.breakout_level}")
+        # The level must be given the same tolerance the entry granted it.
+        # `confirm_retest` accepts a retest within 0.25 ATR of the level, so an
+        # exit triggering at any amount below it contradicts the rule that
+        # opened the position: entry happens at the level, and the position is
+        # then closed by the first tick of noise, paying a full round trip for
+        # nothing. A backtest of 21 trades produced zero winners for exactly
+        # this reason, with ten of them exiting on a broken thesis.
+        if position.breakout_level > 0:
+            tolerance = 0.25 * position.atr if position.atr > 0 else 0.0
+            if price < position.breakout_level - tolerance:
+                return _exit(
+                    ExitReason.THESIS_BROKEN, 1.0, f"below_level={position.breakout_level}"
+                )
 
     # 3. Liquidity. Getting out has become expensive.
     if liquidity is not None and liquidity < limits.minimum_pool_liquidity_usd:
@@ -218,10 +229,14 @@ def evaluate_exit(
                 ExitReason.PROFIT_FIRST_SCALE, limits.first_scale_fraction, f"r={r_multiple:.2f}"
             )
 
-        # Trail only what is left after scaling, and only once in profit.
+        # Trail only what is left after scaling, and only once genuinely in
+        # profit. Breakeven is entry plus the round trip, not entry: an exit
+        # above entry but below that line is a loss, and calling it a profit
+        # exit hides the loss in the label.
         if position.scaled_out_fraction > 0 and position.high_water_price > 0 and position.atr > 0:
+            breakeven = position.entry_price * (1 + limits.round_trip_cost_pct / 100.0)
             trail = position.high_water_price - limits.trail_atr_multiple * position.atr
-            if price <= trail and trail > position.entry_price:
+            if price <= trail and trail > breakeven:
                 return _exit(ExitReason.PROFIT_TRAIL, 1.0, f"trail={trail:.10f}")
 
     # 6. Time. The move never came.

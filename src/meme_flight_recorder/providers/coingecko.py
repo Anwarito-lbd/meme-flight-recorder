@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, ClassVar
 
 from .http import get_json
 
@@ -69,9 +71,31 @@ class CoinGeckoProvider:
             },
         )
 
-    def pool_ohlcv(self, pool: str, aggregate: int = 15, limit: int = 100) -> Any:
+    # The provider exposes a separate path per timeframe, and each accepts only
+    # its own aggregates. Requesting aggregate=60 on the minute path returns
+    # nothing rather than erroring, which silently looks like "no data" and can
+    # be mistaken for a real result.
+    OHLCV_AGGREGATES: ClassVar[Mapping[str, frozenset[int]]] = MappingProxyType(
+        {
+            "minute": frozenset({1, 5, 15}),
+            "hour": frozenset({1, 4, 12}),
+            "day": frozenset({1}),
+        }
+    )
+
+    def pool_ohlcv(
+        self, pool: str, aggregate: int = 15, limit: int = 100, timeframe: str = "minute"
+    ) -> Any:
+        allowed = self.OHLCV_AGGREGATES.get(timeframe)
+        if allowed is None:
+            raise ValueError(f"timeframe must be one of {sorted(self.OHLCV_AGGREGATES)}")
+        if aggregate not in allowed:
+            raise ValueError(
+                f"aggregate {aggregate} unsupported for {timeframe}; "
+                f"allowed: {sorted(allowed)}"
+            )
         return self._get(
-            f"/onchain/networks/solana/pools/{pool}/ohlcv/minute",
+            f"/onchain/networks/solana/pools/{pool}/ohlcv/{timeframe}",
             {
                 "aggregate": aggregate,
                 "limit": max(1, min(limit, 1000)),

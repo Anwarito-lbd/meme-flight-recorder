@@ -133,6 +133,15 @@ class ExitLimits:
     # Stale: the position can no longer be observed at all.
     stale_after_failed_checks: int = 3
 
+    # Round-trip cost, used to locate true breakeven.
+    #
+    # A backtest produced four exits labelled "profit_trail_stop" that all lost
+    # money, because the trail only required price to be above entry while entry
+    # and exit together cost about 6%. An exit above entry but below
+    # cost-adjusted breakeven is a loss wearing a nice name, and at this account
+    # size costs are the dominant term rather than a rounding detail.
+    round_trip_cost_pct: float = 6.0
+
 
 @dataclass(frozen=True)
 class Settings:
