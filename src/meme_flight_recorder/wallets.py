@@ -199,6 +199,60 @@ def _amount(transfer: dict[str, Any]) -> float:
     return 0.0
 
 
+WRAPPED_SOL = "So11111111111111111111111111111111111111112"
+
+
+def swap_legs(transaction: dict[str, Any], address: str) -> tuple[float, dict[str, float]]:
+    """Normalise one transaction into a SOL delta and per-mint token deltas.
+
+    Two payload shapes exist and only one of them was supported, which is why
+    this module reported zero trades across 1,200 real transactions while its
+    tests passed: the fixtures were written to match the assumption rather than
+    the API.
+
+    * **Wallet API** (`/v1/wallet/{address}/history`) returns `balanceChanges`,
+      a list of signed per-mint deltas already scoped to the wallet. Wrapped SOL
+      is the quote leg.
+    * **Enhanced Transactions API** returns `tokenTransfers` and
+      `nativeTransfers` with explicit from/to accounts.
+
+    Both reduce to the same thing: what the wallet gained or lost, by mint.
+    """
+    changes = transaction.get("balanceChanges")
+    if isinstance(changes, list) and changes:
+        sol = 0.0
+        tokens: dict[str, float] = {}
+        for change in changes:
+            mint = str(change.get("mint") or "")
+            try:
+                amount = float(change.get("amount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not mint or amount == 0.0:
+                continue
+            if mint == WRAPPED_SOL:
+                sol += amount
+            else:
+                tokens[mint] = tokens.get(mint, 0.0) + amount
+        return sol, tokens
+
+    # Enhanced Transactions shape.
+    sol = _sol_delta(transaction, address)
+    tokens = {}
+    for transfer in transaction.get("tokenTransfers") or []:
+        mint = str(transfer.get("mint") or "")
+        if not mint:
+            continue
+        quantity = _amount(transfer)
+        if quantity <= 0:
+            continue
+        if transfer.get("toUserAccount") == address:
+            tokens[mint] = tokens.get(mint, 0.0) + quantity
+        elif transfer.get("fromUserAccount") == address:
+            tokens[mint] = tokens.get(mint, 0.0) - quantity
+    return sol, tokens
+
+
 def _sol_delta(transaction: dict[str, Any], address: str) -> float:
     """Net SOL the wallet gained (positive) or spent (negative), in SOL."""
     lamports = 0.0
@@ -248,24 +302,21 @@ def profile_wallet(
         if "LIQUIDITY" in kind:
             liquidity_events += 1
 
-        token_transfers = transaction.get("tokenTransfers") or []
-        if not token_transfers or moment is None:
+        sol, tokens = swap_legs(transaction, address)
+        if not tokens or moment is None:
             continue
 
-        sol = _sol_delta(transaction, address)
-
-        for transfer in token_transfers:
-            mint = str(transfer.get("mint") or "")
-            if not mint:
-                continue
-            quantity = _amount(transfer)
-            if quantity <= 0:
+        for mint, delta in tokens.items():
+            if delta == 0:
                 continue
             seen_mints.add(mint)
 
-            if transfer.get("toUserAccount") == address and sol < 0:
-                open_lots.setdefault(mint, []).append((moment, quantity, abs(sol)))
-            elif transfer.get("fromUserAccount") == address and sol > 0:
+            if delta > 0 and sol < 0:
+                # Bought: tokens in, SOL out.
+                open_lots.setdefault(mint, []).append((moment, delta, abs(sol)))
+            elif delta < 0 and sol > 0:
+                # Sold: tokens out, SOL in.
+                quantity = abs(delta)
                 lots = open_lots.get(mint) or []
                 if not lots:
                     # Sold something never seen bought: an airdrop, a transfer in

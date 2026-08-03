@@ -245,3 +245,76 @@ def test_limits_are_configurable() -> None:
     profile = profile_wallet("W1", round_trips(30), history_truncated=False)
     verdict, _notes = classify_wallet(profile, strict)
     assert verdict is WalletClass.INSUFFICIENT_HISTORY
+
+
+# --- Wallet API shape -------------------------------------------------------
+#
+# The bug these guard: profile_wallet only understood the Enhanced Transactions
+# shape (tokenTransfers/nativeTransfers), while the Wallet API endpoint the
+# backfill actually calls returns `balanceChanges`. Every test passed because the
+# fixtures were written to match the assumption. Against 1,200 real transactions
+# the module reported zero trades and zero tokens.
+
+WSOL = "So11111111111111111111111111111111111111112"
+
+
+def balance_change_tx(minutes: float, mint: str, token_delta: float, sol_delta: float) -> dict:
+    return {
+        "signature": f"sig{minutes}",
+        "timestamp": stamp(minutes),
+        "fee": 5000,
+        "balanceChanges": [
+            {"mint": mint, "amount": token_delta, "decimals": 0},
+            {"mint": WSOL, "amount": sol_delta, "decimals": 9},
+        ],
+    }
+
+
+def test_balance_changes_shape_reconstructs_a_round_trip() -> None:
+    history = [
+        balance_change_tx(0, "MINT_A", token_delta=1000.0, sol_delta=-1.0),
+        balance_change_tx(60, "MINT_A", token_delta=-1000.0, sol_delta=1.5),
+    ]
+    profile = profile_wallet("W1", history, history_truncated=False)
+    assert profile.trade_count == 1
+    assert profile.distinct_tokens == 1
+    assert round(profile.trades[0].pnl_sol, 6) == 0.5
+
+
+def test_balance_changes_buy_without_sell_is_not_a_trade() -> None:
+    profile = profile_wallet("W1", [balance_change_tx(0, "MINT_A", 1000.0, -1.0)])
+    assert profile.trade_count == 0
+    assert profile.distinct_tokens == 1
+
+
+def test_balance_changes_sell_without_buy_is_unexplained() -> None:
+    profile = profile_wallet("W1", [balance_change_tx(0, "MINT_A", -1000.0, 2.0)])
+    assert profile.trade_count == 0
+    assert profile.unexplained_transfers == 1
+
+
+def test_wrapped_sol_is_the_quote_leg_not_a_position() -> None:
+    """SOL must not be counted as a token being traded against itself."""
+    profile = profile_wallet(
+        "W1",
+        [
+            balance_change_tx(0, "MINT_A", 1000.0, -1.0),
+            balance_change_tx(60, "MINT_A", -1000.0, 2.0),
+        ],
+        history_truncated=False,
+    )
+    assert WSOL not in {trade.mint for trade in profile.trades}
+    assert profile.distinct_tokens == 1
+
+
+def test_both_payload_shapes_agree_on_the_same_economic_event() -> None:
+    enhanced = profile_wallet("W1", [buy("A", 0, 1.0), sell("A", 60, 1.5)])
+    wallet_api = profile_wallet(
+        "W1",
+        [
+            balance_change_tx(0, "A", 1000.0, -1.0),
+            balance_change_tx(60, "A", -1000.0, 1.5),
+        ],
+    )
+    assert enhanced.trade_count == wallet_api.trade_count == 1
+    assert round(enhanced.trades[0].pnl_sol, 6) == round(wallet_api.trades[0].pnl_sol, 6)
