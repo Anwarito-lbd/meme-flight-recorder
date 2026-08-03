@@ -167,6 +167,43 @@ class HeliusProvider:
             ),
         )
 
+    def largest_holder_owners(self, mint: str) -> list[tuple[str, float]]:
+        """Return ``(owner, raw_amount)`` for the largest holders of a mint.
+
+        ``getTokenLargestAccounts`` returns token *accounts*, not owners, and the
+        distinction matters twice over: one owner can hold several accounts, and
+        an AMM pool's vault is an account whose owner identifies it as
+        infrastructure. Resolving owners is what makes the pool subtractable, so
+        a genuine private-holder concentration can be computed.
+
+        Two RPC calls regardless of holder count: the largest-accounts query,
+        then one batched account fetch. A per-account loop would be twenty calls
+        per candidate and would exhaust the free tier within a cycle.
+        """
+        largest = self.rpc("getTokenLargestAccounts", [mint])
+        accounts = (largest or {}).get("value") or []
+        if not accounts:
+            return []
+
+        addresses = [str(item["address"]) for item in accounts if item.get("address")]
+        amounts = {
+            str(item["address"]): float(item.get("amount") or 0)
+            for item in accounts
+            if item.get("address")
+        }
+
+        fetched = self.rpc("getMultipleAccounts", [addresses, {"encoding": "jsonParsed"}])
+        holdings: list[tuple[str, float]] = []
+        for address, account in zip(addresses, (fetched or {}).get("value") or [], strict=False):
+            if not account:
+                continue
+            owner = (
+                (account.get("data") or {}).get("parsed", {}).get("info", {}).get("owner")
+            )
+            if owner:
+                holdings.append((str(owner), amounts.get(address, 0.0)))
+        return holdings
+
     def simulate_unsigned_transaction(
         self, transaction_base64: str, replace_recent_blockhash: bool = True
     ) -> dict[str, Any]:

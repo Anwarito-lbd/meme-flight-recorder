@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
+from .clusters import adjusted_top_holder_pct
 from .models import TokenSnapshot
 from .transferability import assess_transferability
 
@@ -133,10 +134,9 @@ def enrich_snapshot(
             # infrastructure -- would reject every migrated token on a number
             # that describes the pool rather than any holder.
             #
-            # It is still useful evidence, so it is recorded under its own name
-            # and left for the cluster tier to interpret. Deriving a genuine
-            # private figure requires identifying and subtracting the pool
-            # accounts, which is tracked separately.
+            # It is still useful evidence, so it is recorded under its own name.
+            # The genuine private figure is computed just below by resolving
+            # account owners and subtracting infrastructure.
             if evidence.gross_top10_account_pct is not None:
                 transfer_evidence["gross_top10_account_pct"] = evidence.gross_top10_account_pct
                 transfer_evidence["largest_accounts_observed"] = (
@@ -147,6 +147,25 @@ def enrich_snapshot(
                 unresolved.append("gross_top10_account_pct")
                 if evidence.largest_accounts_error:
                     errors["largest_accounts"] = evidence.largest_accounts_error
+            # The private concentration figure the gate has always meant. Owners
+            # are resolved so the AMM vault can be subtracted; see
+            # clusters.adjusted_top_holder_pct for why an incomplete exclusion
+            # list is safe here and the gross number never was.
+            adjusted = None
+            if hasattr(mint_provider, "largest_holder_owners"):
+                try:
+                    holdings = mint_provider.largest_holder_owners(mint)
+                except Exception as error:  # noqa: BLE001
+                    errors["largest_holder_owners"] = f"{type(error).__name__}: {error}"
+                else:
+                    adjusted = adjusted_top_holder_pct(holdings, float(evidence.supply_raw))
+            if adjusted is None:
+                unresolved.append("top10_private_holder_pct")
+            else:
+                updates["top10_private_holder_pct"] = adjusted
+                transfer_evidence["adjusted_top10_private_pct"] = adjusted
+                resolved.append("top10_private_holder_pct")
+
             updates["raw_evidence"] = {**snapshot.raw_evidence, **transfer_evidence}
     else:
         unresolved.extend(

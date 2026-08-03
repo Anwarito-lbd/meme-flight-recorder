@@ -59,6 +59,53 @@ DEFAULT_INFRASTRUCTURE_ADDRESSES: frozenset[str] = frozenset(
 )
 
 
+def adjusted_top_holder_pct(
+    holdings: Iterable[tuple[str, float]],
+    supply: float,
+    *,
+    top_n: int = 10,
+    excluded: Iterable[str] = (),
+) -> float | None:
+    """Top-N concentration as a share of supply, excluding infrastructure.
+
+    ``holdings`` are ``(owner, amount)`` pairs in raw token units, keyed by the
+    *owner* rather than the token account, so several accounts belonging to one
+    owner count once.
+
+    This is the figure `top10_private_holder_pct` has always meant and never
+    received. The raw `getTokenLargestAccounts` number counts the AMM pool's own
+    vault, and a freshly migrated token keeps most of its supply there, so the
+    gross figure approaches 100% for perfectly ordinary tokens. Writing it into
+    the private field once rejected 25 of 25 candidates on a number describing
+    the pool.
+
+    **The exclusion list is incomplete by construction** -- it covers the AMM
+    authorities and burn addresses that are known, and new venues appear
+    constantly. An unrecognised pool therefore counts as a holder and *overstates*
+    concentration, which rejects candidates rather than admitting them. That is
+    the safe direction for an incomplete list to fail in, and it is why this is
+    usable despite the gap.
+
+    Returns None when supply is unknown or nothing is left after exclusion,
+    because a concentration of "zero holders" is an absence of measurement
+    rather than a perfectly distributed token.
+    """
+    if supply <= 0:
+        return None
+    blocked = set(excluded) | DEFAULT_INFRASTRUCTURE_ADDRESSES
+
+    combined: dict[str, float] = {}
+    for owner, amount in holdings:
+        if not owner or owner in blocked or amount <= 0:
+            continue
+        combined[owner] = combined.get(owner, 0.0) + amount
+
+    if not combined:
+        return None
+    largest = sorted(combined.values(), reverse=True)[:top_n]
+    return round(100.0 * sum(largest) / supply, 6)
+
+
 class ClusterVerdict(StrEnum):
     CLEAR = "clear"
     SUSPECT = "suspect"
