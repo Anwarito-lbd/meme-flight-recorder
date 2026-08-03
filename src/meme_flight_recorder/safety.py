@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from .config import SafetyLimits
+from .clusters import ClusterAssessment, ClusterVerdict
+from .config import ClusterLimits, SafetyLimits
 from .models import CandidateStatus, SafetyDecision, TokenSnapshot, Universe
 
 
@@ -17,13 +18,26 @@ class SafetyEngine:
     """Fail closed when critical identity, authority, liquidity, or exit evidence is absent."""
 
     def __init__(
-        self, cex_limits: SafetyLimits, solana_limits: SafetyLimits, stale_after_seconds: int
+        self,
+        cex_limits: SafetyLimits,
+        solana_limits: SafetyLimits,
+        stale_after_seconds: int,
+        cluster_limits: ClusterLimits | None = None,
     ) -> None:
         self.cex_limits = cex_limits
         self.solana_limits = solana_limits
         self.stale_after_seconds = stale_after_seconds
+        # Opt-in: when no cluster limits are configured the engine behaves
+        # exactly as before. Once configured, on-chain candidates must carry a
+        # cluster assessment or they are rejected for missing evidence.
+        self.cluster_limits = cluster_limits
 
-    def evaluate(self, snapshot: TokenSnapshot, now: datetime | None = None) -> SafetyDecision:
+    def evaluate(
+        self,
+        snapshot: TokenSnapshot,
+        now: datetime | None = None,
+        cluster: ClusterAssessment | None = None,
+    ) -> SafetyDecision:
         now = now or datetime.now(UTC)
         limits = (
             self.cex_limits if snapshot.universe == Universe.CEX_ESTABLISHED else self.solana_limits
@@ -88,6 +102,9 @@ class SafetyEngine:
                 failures,
             )
 
+        if self.cluster_limits is not None and snapshot.universe != Universe.CEX_ESTABLISHED:
+            self._clusters(cluster, failures, warnings)
+
         self._impact(
             snapshot.entry_price_impact_pct,
             limits.maximum_entry_price_impact_pct,
@@ -107,6 +124,27 @@ class SafetyEngine:
         if snapshot.universe == Universe.SOLANA_LAUNCH and not failures:
             status = CandidateStatus.MONITOR
         return SafetyDecision(status, tuple(failures), tuple(warnings), now)
+
+    @staticmethod
+    def _clusters(
+        cluster: ClusterAssessment | None, failures: list[str], warnings: list[str]
+    ) -> None:
+        """Fold a coordinated-wallet assessment into the gate result.
+
+        A SUSPECT verdict is a warning rather than a rejection: it means the
+        structure is unusual but no threshold was breached, and downgrading it
+        to a rejection would discard almost every real launch. DISQUALIFIED and
+        INSUFFICIENT_EVIDENCE both reject, because the fail-closed rule treats
+        "we could not tell" the same as "we found something".
+        """
+        if cluster is None:
+            failures.append("cluster_evidence_missing")
+            return
+        if cluster.verdict is ClusterVerdict.DISQUALIFIED:
+            failures.extend(cluster.failures or ("cluster_disqualified",))
+        elif cluster.verdict is ClusterVerdict.INSUFFICIENT_EVIDENCE:
+            failures.append("cluster_evidence_insufficient")
+        warnings.extend(cluster.warnings)
 
     @staticmethod
     def _impact(value: float | None, maximum: float, label: str, failures: list[str]) -> None:

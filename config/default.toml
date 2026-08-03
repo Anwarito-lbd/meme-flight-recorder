@@ -18,6 +18,25 @@ maximum_entry_price_impact_pct = 2.0
 maximum_exit_price_impact_pct = 3.0
 maximum_top10_private_holder_pct = 30.0
 
+[safety.clusters]
+# Vendor-label tier: a fast pre-filter over a discovery feed's precomputed
+# concentration metrics. Treated as unverified third-party evidence.
+maximum_insider_pct = 15.0
+maximum_sniper_pct = 15.0
+maximum_bundler_pct = 5.0
+maximum_fresh_wallet_pct = 20.0
+maximum_dev_sell_pct = 0.0
+maximum_dev_prior_launches = 2
+minimum_vendor_confidence = 0.6
+
+# Independent funding-graph tier reconstructed from on-chain data.
+maximum_linked_cluster_pct = 10.0
+maximum_single_funder_fresh_wallet_pct = 30.0
+minimum_holder_coverage_pct = 80.0
+minimum_graph_confidence = 0.5
+reject_on_launch_bundle = true
+require_bundle_evidence = false
+
 [risk]
 risk_per_cex_trade_pct = 0.5
 capital_at_risk_per_solana_trade_pct = 0.25

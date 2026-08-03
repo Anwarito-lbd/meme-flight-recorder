@@ -17,6 +17,32 @@ class SafetyLimits:
 
 
 @dataclass(frozen=True)
+class ClusterLimits:
+    """Thresholds for coordinated-wallet detection.
+
+    Defaults are deliberately strict. The published base rates for this market
+    are bad enough that a permissive default would pass most of what it sees.
+    """
+
+    # Vendor-label tier.
+    maximum_insider_pct: float = 15.0
+    maximum_sniper_pct: float = 15.0
+    maximum_bundler_pct: float = 5.0
+    maximum_fresh_wallet_pct: float = 20.0
+    maximum_dev_sell_pct: float = 0.0
+    maximum_dev_prior_launches: int = 2
+    minimum_vendor_confidence: float = 0.6
+
+    # Independent funding-graph tier.
+    maximum_linked_cluster_pct: float = 10.0
+    maximum_single_funder_fresh_wallet_pct: float = 30.0
+    minimum_holder_coverage_pct: float = 80.0
+    minimum_graph_confidence: float = 0.5
+    reject_on_launch_bundle: bool = True
+    require_bundle_evidence: bool = False
+
+
+@dataclass(frozen=True)
 class RiskLimits:
     risk_per_cex_trade_pct: float
     capital_at_risk_per_solana_trade_pct: float
@@ -35,6 +61,7 @@ class Settings:
     cex_safety: SafetyLimits
     solana_safety: SafetyLimits
     risk: RiskLimits
+    clusters: ClusterLimits = ClusterLimits()
 
     def __post_init__(self) -> None:
         if self.execution_mode != "paper":
@@ -63,4 +90,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
         cex_safety=_safety(data["safety"]["cex"]),
         solana_safety=_safety(data["safety"]["solana_emerging"]),
         risk=RiskLimits(**data["risk"]),
+        # Absent section keeps the strict dataclass defaults rather than
+        # disabling the gates, so an older config file cannot silently opt out
+        # of cluster detection.
+        clusters=ClusterLimits(**data["safety"].get("clusters", {})),
     )
