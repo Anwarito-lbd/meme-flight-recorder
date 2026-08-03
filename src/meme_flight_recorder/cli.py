@@ -26,6 +26,17 @@ def main() -> int:
     )
     collect.add_argument("--stages", default="new,finalizing,migrated")
     collect.add_argument("--no-enrich", action="store_true")
+    collect.add_argument(
+        "--allow-sleep",
+        action="store_true",
+        help="Do not suppress system sleep (the host may then miss cycles).",
+    )
+    collect.add_argument(
+        "--delay",
+        type=float,
+        default=None,
+        help="Seconds between candidates. Paces router calls under its rate limit.",
+    )
     score = sub.add_parser(
         "score-sources", help="Rank sources by post-call expectancy after costs."
     )
@@ -132,6 +143,7 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             limit_per_stage=args.limit,
             interval_seconds=args.interval,
             enrich=not args.no_enrich,
+            **({} if args.delay is None else {"per_candidate_delay_seconds": args.delay}),
         ),
     )
 
@@ -164,10 +176,17 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
         for error in summary.errors[:3]:
             print(f"  error: {error}", flush=True)
 
-    try:
-        collector.run_forever(cycles=args.cycles, on_cycle=report)
-    except KeyboardInterrupt:
-        print("\nstopped; journal is intact.")
+    from .keepawake import KeepAwake
+
+    # The first unattended run journalled 9 cycles instead of 96 because the
+    # host slept between cycles. Nothing errored, which is exactly why it has
+    # to be handled rather than noticed.
+    with KeepAwake(enabled=not args.allow_sleep) as awake:
+        print(f"Power: {awake.status}.\n", flush=True)
+        try:
+            collector.run_forever(cycles=args.cycles, on_cycle=report)
+        except KeyboardInterrupt:
+            print("\nstopped; journal is intact.")
     return 0
 
 

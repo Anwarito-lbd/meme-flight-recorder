@@ -57,6 +57,14 @@ class CollectorConfig:
     interval_seconds: int = 300
     enrich: bool = True
     intended_order_sol: float = 0.05
+    # Enrichment makes two quote calls per candidate, so a 60-candidate cycle
+    # bursts roughly 120 requests at the router in about 100 seconds, which
+    # exceeds its published allowance and returns 429s. Retries then eat the
+    # budget further and the affected candidates end up recorded with unknown
+    # routes -- data loss that looks like ordinary rejection. Pacing costs a
+    # little wall-clock time in a cycle that is idle two thirds of the time
+    # anyway.
+    per_candidate_delay_seconds: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -101,7 +109,7 @@ class Collector:
             settings.clusters,
         )
 
-    def run_once(self) -> CycleSummary:
+    def run_once(self, sleep: Callable[[float], None] = time.sleep) -> CycleSummary:
         """Run one full poll across configured stages."""
         started = self.clock()
         observed = recorded = 0
@@ -120,8 +128,10 @@ class Collector:
                 errors.append(f"{stage}: {type(error).__name__}: {error}")
                 continue
 
-            for row in rows:
+            for index, row in enumerate(rows):
                 observed += 1
+                if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
+                    sleep(self.config.per_candidate_delay_seconds)
                 try:
                     status, failures = self._record(row, stage, started)
                 except Exception as error:  # noqa: BLE001
@@ -167,7 +177,7 @@ class Collector:
         summaries: list[CycleSummary] = []
         completed = 0
         while cycles is None or completed < cycles:
-            summary = self.run_once()
+            summary = self.run_once(sleep=sleep)
             summaries.append(summary)
             if on_cycle is not None:
                 on_cycle(summary)

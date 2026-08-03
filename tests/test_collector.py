@@ -192,6 +192,33 @@ class CollectorTests(unittest.TestCase):
         self._collector(discovery).run_once()
         self.assertTrue(self.recorder.verify_chain())
 
+    def test_candidates_are_paced_to_respect_router_rate_limits(self):
+        """Unpaced, a cycle bursts past the quote router's allowance."""
+        discovery = FakeDiscovery(
+            [_row(f"Mint{index}", CLEAN_LABELS) for index in range(4)]
+        )
+        collector = Collector(
+            self.settings,
+            self.recorder,
+            discovery=discovery,
+            config=CollectorConfig(
+                stages=("migrated",), enrich=True, per_candidate_delay_seconds=0.6
+            ),
+            clock=lambda: NOW,
+        )
+        slept: list[float] = []
+        collector.run_once(sleep=slept.append)
+
+        # One pause between each pair of candidates, never before the first.
+        self.assertEqual(slept, [0.6, 0.6, 0.6])
+
+    def test_pacing_is_skipped_when_enrichment_is_off(self):
+        """Without enrichment there are no router calls to pace."""
+        discovery = FakeDiscovery([_row(f"Mint{i}", CLEAN_LABELS) for i in range(4)])
+        slept: list[float] = []
+        self._collector(discovery).run_once(sleep=slept.append)
+        self.assertEqual(slept, [])
+
     def test_run_forever_is_bounded_by_cycles(self):
         discovery = FakeDiscovery([_row("Mint1", CLEAN_LABELS)])
         slept: list[float] = []
