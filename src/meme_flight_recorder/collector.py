@@ -69,14 +69,37 @@ class CollectorConfig:
     interval_seconds: int = 300
     enrich: bool = True
     intended_order_sol: float = 0.05
-    # Enrichment makes two quote calls per candidate, so a 60-candidate cycle
-    # bursts roughly 120 requests at the router in about 100 seconds, which
-    # exceeds its published allowance and returns 429s. Retries then eat the
-    # budget further and the affected candidates end up recorded with unknown
-    # routes -- data loss that looks like ordinary rejection. Pacing costs a
-    # little wall-clock time in a cycle that is idle two thirds of the time
-    # anyway.
-    per_candidate_delay_seconds: float = 0.6
+
+    # Pacing, derived rather than guessed.
+    #
+    # This was a flat 0.6 seconds, justified by a comment claiming a
+    # 60-candidate cycle spread ~120 requests over "about 100 seconds". The
+    # arithmetic was wrong: 60 candidates at 0.6s is 36 seconds, so the real
+    # rate was 200 requests per minute. At the default limit of 50 across three
+    # stages it was 300 calls in 90 seconds -- still 200/min. Every 429 observed
+    # in this project traces back to that constant.
+    #
+    # A 429 is worse than slow. Route and impact come back unknown, the gates
+    # fail closed, and the candidate is journalled as an ordinary rejection.
+    # The data loss is invisible: it looks exactly like a token that failed.
+    #
+    # So the delay is now computed from a target request rate. Set
+    # ``per_candidate_delay_seconds`` to override for a provider with a
+    # different allowance -- and verify the allowance against the provider's own
+    # documentation rather than trusting this default.
+    quote_calls_per_candidate: int = 2
+    target_requests_per_minute: float = 60.0
+    per_candidate_delay_seconds: float | None = None
+
+    @property
+    def pacing_delay_seconds(self) -> float:
+        """Seconds to wait per candidate to stay inside the target rate."""
+        if self.per_candidate_delay_seconds is not None:
+            return max(self.per_candidate_delay_seconds, 0.0)
+        if self.target_requests_per_minute <= 0:
+            return 0.0
+        per_second = self.target_requests_per_minute / 60.0
+        return max(self.quote_calls_per_candidate / per_second, 0.0)
 
 
 @dataclass(frozen=True)
@@ -170,8 +193,8 @@ class Collector:
                 failure_counts.update({f"mover_{k}": v for k, v in skipped.items()})
             for index, pool in enumerate(pools):
                 observed += 1
-                if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
-                    sleep(self.config.per_candidate_delay_seconds)
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
                 try:
                     absorb(*self._record_pool(pool, started))
                 except Exception as error:  # noqa: BLE001
@@ -190,8 +213,8 @@ class Collector:
 
             for index, row in enumerate(rows):
                 observed += 1
-                if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
-                    sleep(self.config.per_candidate_delay_seconds)
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
                 try:
                     absorb(*self._record(row, stage, started))
                 except Exception as error:  # noqa: BLE001

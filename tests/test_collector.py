@@ -232,3 +232,42 @@ class CollectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PacingTests(unittest.TestCase):
+    """The delay must be derived from a rate, not a constant.
+
+    The previous flat 0.6s was justified by arithmetic that did not hold: 60
+    candidates at 0.6s is 36 seconds, not the ~100 the comment claimed, so the
+    real rate was 200 requests per minute against a provider allowing far less.
+    Every 429 in this project traced back to it, and a 429 is invisible damage --
+    route and impact read unknown, the gates fail closed, and the candidate is
+    journalled as an ordinary rejection.
+    """
+
+    def test_delay_keeps_the_default_config_inside_the_target_rate(self) -> None:
+        config = CollectorConfig()
+        candidates = config.limit_per_stage * len(config.stages)
+        calls = candidates * config.quote_calls_per_candidate
+        seconds = candidates * config.pacing_delay_seconds
+        self.assertGreater(seconds, 0)
+        self.assertLessEqual(calls / (seconds / 60.0), config.target_requests_per_minute + 1e-6)
+
+    def test_old_constant_would_have_breached_the_rate(self) -> None:
+        """Guards the regression rather than merely describing it."""
+        config = CollectorConfig(per_candidate_delay_seconds=0.6)
+        candidates = config.limit_per_stage * len(config.stages)
+        calls = candidates * config.quote_calls_per_candidate
+        seconds = candidates * config.pacing_delay_seconds
+        self.assertGreater(calls / (seconds / 60.0), config.target_requests_per_minute)
+
+    def test_explicit_override_is_honoured(self) -> None:
+        self.assertEqual(CollectorConfig(per_candidate_delay_seconds=1.5).pacing_delay_seconds, 1.5)
+
+    def test_zero_target_disables_pacing_rather_than_dividing_by_zero(self) -> None:
+        self.assertEqual(CollectorConfig(target_requests_per_minute=0).pacing_delay_seconds, 0.0)
+
+    def test_a_stricter_allowance_produces_a_longer_delay(self) -> None:
+        lenient = CollectorConfig(target_requests_per_minute=120).pacing_delay_seconds
+        strict = CollectorConfig(target_requests_per_minute=30).pacing_delay_seconds
+        self.assertGreater(strict, lenient)
