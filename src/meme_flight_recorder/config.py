@@ -75,6 +75,41 @@ class ClusterLimits:
 
 
 @dataclass(frozen=True)
+class CostModel:
+    """What a round trip actually costs, split into fixed and proportional parts.
+
+    Every backtest in this project charged a flat 3% per leg. That number was
+    never derived from anything, and a flat percentage is structurally wrong at
+    this account's size: network fees do not shrink with the order. On a $4
+    position a fixed fee is a rounding detail; on a $0.50 position it can be a
+    tenth of the stake. Since the whole question is whether a smaller position
+    makes the account survivable, the term that decides it cannot be hidden
+    inside a percentage.
+
+    Defaults are conservative and documented rather than measured, because they
+    depend on network conditions at the moment of the trade. ``sol_price_usd``
+    must be supplied by the caller for anything load-bearing -- a stale price
+    silently rescales every fixed cost.
+    """
+
+    # Solana's base signature fee, fixed by the protocol at 5,000 lamports.
+    base_fee_sol: float = 0.000005
+    # Priority fee. This is the number that separates a patient buyer from a
+    # sniper: competitive launch sniping bids this up by orders of magnitude,
+    # which is one reason a small account cannot win that race.
+    priority_fee_sol: float = 0.0001
+    # Router and pool fee taken from the swap itself.
+    dex_fee_pct: float = 0.25
+    # Overridden by a live quote wherever one is available.
+    assumed_impact_pct: float = 0.5
+    sol_price_usd: float = 150.0
+
+    @property
+    def fixed_cost_per_leg_usd(self) -> float:
+        return (self.base_fee_sol + self.priority_fee_sol) * self.sol_price_usd
+
+
+@dataclass(frozen=True)
 class CohortLimits:
     """What a wallet must demonstrate before it counts as worth following.
 
@@ -288,6 +323,7 @@ class Settings:
     flow: FlowLimits = FlowLimits()
     deployer: DeployerLimits = DeployerLimits()
     cohort: CohortLimits = CohortLimits()
+    costs: CostModel = CostModel()
 
     def __post_init__(self) -> None:
         if self.execution_mode != "paper":
@@ -329,4 +365,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         flow=FlowLimits(**data["safety"].get("flow", {})),
         deployer=DeployerLimits(**data["safety"].get("deployer", {})),
         cohort=CohortLimits(**data["safety"].get("cohort", {})),
+        costs=CostModel(**data.get("costs", {})),
     )

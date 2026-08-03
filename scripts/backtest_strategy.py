@@ -13,9 +13,14 @@ candle using that candle's low, because within a candle the worst price arrives
 before the close and a rule that only sees closes reports fills it could not
 have achieved.
 
-**Costs on both legs.** At this account size costs dominate: roughly 3% each way
-means a 6% move is required just to break even. A gross figure would look
-profitable while losing money on every trade.
+**Costs on both legs, derived rather than assumed.** This script used to charge a
+flat 3% per leg, a figure that came from nowhere and overstated the truth by
+roughly 2.6x at the position size this account takes. Cost now comes from
+``costs.round_trip_cost``, which separates the fixed network fee from the
+proportional router fee and impact -- a distinction that matters because fixed
+fees do not shrink with the order and decide whether a sub-dollar position is
+viable at all. A gross figure would still look profitable while losing money, so
+costs remain charged on both legs; they are simply the right size now.
 
 **Survivorship is disclosed.** Tokens are sampled from a trending feed, which by
 construction contains things that already worked. That biases results upward and
@@ -28,12 +33,15 @@ from __future__ import annotations
 
 import argparse
 import statistics
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from meme_flight_recorder.config import ExitLimits, load_settings
+from meme_flight_recorder.costs import round_trip_cost
 from meme_flight_recorder.discovery import select_movers
 from meme_flight_recorder.entry import EntryLimits, find_entries
 from meme_flight_recorder.exits import (
+    ExitDecision,
     PositionObservation,
     PositionView,
     evaluate_exit,
@@ -60,6 +68,9 @@ def to_candles(rows: list[list[float]]) -> list[Candle]:
     ]
 
 
+ExitPolicy = Callable[[PositionView, PositionObservation, ExitLimits], ExitDecision]
+
+
 def backtest_token(
     mint: str,
     symbol: str,
@@ -69,8 +80,16 @@ def backtest_token(
     cost_pct: float,
     exit_limits: ExitLimits,
     entry_limits: EntryLimits,
+    policy: ExitPolicy = evaluate_exit,
+    exit_impact_pct: float = 0.5,
 ) -> list[TradeSummary]:
-    """Run every entry this token produced, one position at a time."""
+    """Run every entry this token produced, one position at a time.
+
+    ``policy`` decides when to leave. It defaults to the production exit
+    hierarchy; ``compare_exit_policies.py`` passes alternatives so that the same
+    entry signals can be judged under different exits and nothing but the exit
+    differs between runs.
+    """
     trades: list[TradeSummary] = []
     blocked_until = -1
 
@@ -123,13 +142,16 @@ def backtest_token(
             # stop inside one candle. That case is covered separately by
             # scripts/replay_collapse.py, and it is why sizing assumes total
             # loss rather than relying on any stop.
-            decision_now = evaluate_exit(
+            decision_now = policy(
                 view, PositionObservation(observed_at=moment, price_usd=candle.close), exit_limits
             )
             if not decision_now.should_exit:
                 continue
 
-            fill = realistic_fill_price(candle.close, 3.0, urgent=decision_now.urgent)
+            # Impact comes from the cost model rather than a literal. The old
+            # hardcoded 3.0 charged impact twice over: once here in the fill
+            # price and again in the cost percentage below.
+            fill = realistic_fill_price(candle.close, exit_impact_pct, urgent=decision_now.urgent)
             position = apply_exit(
                 position,
                 at=moment,
@@ -175,7 +197,12 @@ def main() -> int:
         default="15m",
         help="Candle size. Maps to the provider's own timeframe path and aggregate.",
     )
-    parser.add_argument("--cost-pct", type=float, default=3.0)
+    parser.add_argument(
+        "--cost-pct",
+        type=float,
+        default=None,
+        help="Override cost per leg. Omit to derive it from the measured cost model.",
+    )
     arguments = parser.parse_args()
     timeframe, aggregate = TIMEFRAMES[arguments.timeframe]
 
@@ -185,9 +212,23 @@ def main() -> int:
 
     movers, skipped = select_movers(provider.trending_solana_pools())
     movers = movers[: arguments.tokens]
+
+    # Cost per leg is derived from the position this account actually takes,
+    # because a flat percentage is wrong at both ends: it overstates cost at $4
+    # and understates it below $1, where fixed network fees dominate. The old
+    # default of 3% per leg overstated the true figure by roughly 2.6x and made
+    # every result here look worse than it was.
+    nominal_position = settings.starting_equity_usd * settings.micro.position_pct_of_equity / 100.0
+    if arguments.cost_pct is not None:
+        cost_pct = arguments.cost_pct
+        source = "override"
+    else:
+        cost_pct = round_trip_cost(nominal_position, settings.costs).pct_of_position / 2.0
+        source = f"measured at a ${nominal_position:.2f} position"
+
     print(f"{len(movers)} tokens sampled from trending pools (skipped: {skipped})")
     print(
-        f"equity ${settings.starting_equity_usd:.2f}, costs {arguments.cost_pct}% per leg, "
+        f"equity ${settings.starting_equity_usd:.2f}, costs {cost_pct:.3f}% per leg ({source}), "
         f"candles {arguments.timeframe} ({timeframe}/{aggregate})\n"
     )
 
@@ -210,7 +251,7 @@ def main() -> int:
             PortfolioState(equity_usd=settings.starting_equity_usd),
             entry_price=pool.price_usd or 1.0,
             pool_liquidity_usd=pool.liquidity_usd,
-            estimated_round_trip_cost_pct=arguments.cost_pct * 2,
+            estimated_round_trip_cost_pct=cost_pct * 2,
         )
         if not approval.approved:
             risk_rejected += 1
@@ -239,9 +280,10 @@ def main() -> int:
             candles,
             pool.liquidity_usd or 0.0,
             approval.position_value_usd,
-            arguments.cost_pct,
+            cost_pct,
             ExitLimits(),
             EntryLimits(),
+            exit_impact_pct=settings.costs.assumed_impact_pct,
         )
         all_trades.extend(trades)
         if trades:

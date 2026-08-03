@@ -32,6 +32,68 @@ Two questions follow, and both are measurable rather than arguable. This spec
 covers only those two. Grok is deliberately deferred: if no viable position size
 exists, a better signal cannot be acted on regardless of its quality.
 
+## Revision, 2026-08-03: costs measured, and the order changed
+
+Building the cost model first overturned two configured numbers, both in the
+pessimistic direction:
+
+| position | real round-trip cost | assumed |
+|---:|---:|---:|
+| $1.00 | 4.65% | 6% |
+| **$4.00** | **2.29%** | **6%** |
+| $40.00 | 1.58% | 6% |
+
+Every backtest charged 6% per round trip. At $4 the real figure is 2.29%, so
+roughly $0.15 of the measured -$0.63 per trade was fictional cost, and the
+strategy was being judged against a breakeven of 1.06x when the true one is
+1.023x. Separately, `minimum_viable_position_usd = 3.0` was a choice: at a 10%
+cost ceiling the derived floor is **$0.37**. Sub-dollar positions are viable,
+which means the small Kelly fraction this spec was worried about is reachable.
+The concern that $10-40 might be structurally untradeable rested on the assumed
+numbers, and those numbers were wrong.
+
+This reorders the work by dependency. Exit policy changes the return
+distribution, and position sizing must be computed on the distribution that the
+chosen policy actually produces. So:
+
+1. Real costs into `backtest_strategy.py` (was: flat `--cost-pct`)
+2. Exit-policy comparison -- new Deliverable 0 below
+3. Position sizing, on the surviving policy's distribution
+4. Entry latency
+
+## Deliverable 0: `scripts/compare_exit_policies.py`
+
+**Question:** take the double and leave, or hold for the tail?
+
+68% of all gross profit in the measured sample came from 3 tokens out of 155,
+with winners at 10x and 87x. Any policy that caps gains removes exactly that.
+But uncapped exposure is also what produced negative geometric growth at the
+configured position size. Lower expectancy with lower ruin risk may well beat
+higher expectancy that bankrupts the account first, and which one wins is
+arithmetic rather than judgement.
+
+**This cannot be answered from endpoint multiples.** Knowing a token ended at
+0.3x does not say whether it touched 2x on the way. Exit policy needs price
+*paths*, so this runs through the backtest harness on candles, not over the
+distribution study's endpoints.
+
+Policies compared on identical entry signals, so only the exit differs:
+
+- `hierarchy` -- the current engine, scaling at 1R and 2R and trailing the rest
+- `take_2x` -- all out at twice entry, the "double then leave" rule
+- `scale_runner` -- half out at 2x, remainder rides the existing hierarchy
+- `hold_to_end` -- no discretionary exit, the tail-capture baseline
+
+Report per policy: trades, win rate, expectancy, profit factor, largest win,
+**share of gross profit from the single best trade**, and the geometric growth
+contribution. A policy that wins on expectancy while failing the one-third
+outlier rule is reported as failing it.
+
+One correction worth recording, because it caused confusion: the existing engine
+scales at 1R and 2R where R is *risk*, not price. With a 15% stop, "2R" is a 30%
+move, not a double. The current engine therefore exits far earlier than the
+"double then leave" idea it superficially resembles.
+
 ## Deliverable 1: `scripts/study_position_sizing.py`
 
 **Question:** is there a position size at which this account grows, after real
