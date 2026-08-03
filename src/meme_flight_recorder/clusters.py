@@ -95,8 +95,24 @@ def adjusted_top_holder_pct(
     blocked = set(excluded) | DEFAULT_INFRASTRUCTURE_ADDRESSES
 
     combined: dict[str, float] = {}
-    for owner, amount in holdings:
+    for holding in holdings:
+        # Accepts either a plain (owner, amount) pair or a HolderStake, which
+        # additionally knows whether the owner is a keypair wallet or a
+        # protocol-controlled account.
+        owner = getattr(holding, "owner", None)
+        if owner is None:
+            owner, amount = holding
+            is_wallet = True
+        else:
+            amount = holding.amount
+            is_wallet = holding.is_wallet
+
         if not owner or owner in blocked or amount <= 0:
+            continue
+        # A bonding curve or AMM vault is not a holder who can dump on you; it
+        # is the market itself. Counting it produced concentrations of 97-99%
+        # for perfectly ordinary launchpad tokens, measured on live candidates.
+        if not is_wallet:
             continue
         combined[owner] = combined.get(owner, 0.0) + amount
 

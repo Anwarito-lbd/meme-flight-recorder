@@ -73,3 +73,43 @@ def test_unknown_pool_overstates_rather_than_understates() -> None:
     assert unknown_pool not in DEFAULT_INFRASTRUCTURE_ADDRESSES
     result = adjusted_top_holder_pct([(unknown_pool, 900.0), ("A", 10.0)], supply=1000.0)
     assert result == 91.0
+
+
+class _Stake:
+    """Mirrors HolderStake without importing the provider into a pure test."""
+
+    def __init__(self, owner: str, amount: float, is_wallet: bool = True):
+        self.owner = owner
+        self.amount = amount
+        self.is_wallet = is_wallet
+
+
+def test_program_owned_balances_are_not_holders() -> None:
+    """The defect an address list could not catch.
+
+    Measured on live launchpad candidates, counting the bonding curve as a
+    holder produced concentrations of 97-99% for perfectly ordinary tokens --
+    the same failure as the gross figure it replaced.
+    """
+    holdings = [_Stake("CURVE", 970.0, is_wallet=False), _Stake("WHALE", 20.0)]
+    assert adjusted_top_holder_pct(holdings, supply=1000.0) == 2.0
+
+
+def test_unknown_owner_program_counts_as_a_wallet() -> None:
+    """An RPC gap must overstate concentration, never understate it.
+
+    Excluding a balance we failed to classify would admit a token one wallet
+    controls. Counting it merely rejects a candidate.
+    """
+    holdings = [_Stake("MAYBE_WHALE", 800.0, is_wallet=True), _Stake("A", 10.0)]
+    assert adjusted_top_holder_pct(holdings, supply=1000.0) == 81.0
+
+
+def test_plain_tuples_still_work() -> None:
+    """Callers without owner-program data keep the conservative behaviour."""
+    assert adjusted_top_holder_pct([("A", 100.0)], supply=1000.0) == 10.0
+
+
+def test_only_program_owned_balances_leaves_nothing_measurable() -> None:
+    holdings = [_Stake("CURVE", 1000.0, is_wallet=False)]
+    assert adjusted_top_holder_pct(holdings, supply=1000.0) is None

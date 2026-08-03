@@ -28,6 +28,30 @@ class MintEvidence:
     extensions: tuple[str, ...] = ()
 
 
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
+
+
+@dataclass(frozen=True)
+class HolderStake:
+    """One owner's balance, and what program controls that owner account."""
+
+    owner: str
+    amount: float
+    owner_program: str = ""
+
+    @property
+    def is_wallet(self) -> bool:
+        """True when a person could plausibly control this balance.
+
+        A System Program account is a keypair wallet. Anything else is
+        protocol-controlled: an AMM vault, a bonding curve, a staking program.
+        Unknown (empty) is treated as a wallet, so an RPC gap counts the balance
+        as private and *overstates* concentration -- the direction that rejects
+        a candidate rather than admitting one nobody can measure.
+        """
+        return self.owner_program in ("", SYSTEM_PROGRAM)
+
+
 @dataclass(frozen=True)
 class WalletHistoryPage:
     address: str
@@ -167,7 +191,7 @@ class HeliusProvider:
             ),
         )
 
-    def largest_holder_owners(self, mint: str) -> list[tuple[str, float]]:
+    def largest_holder_owners(self, mint: str) -> list[HolderStake]:
         """Return ``(owner, raw_amount)`` for the largest holders of a mint.
 
         ``getTokenLargestAccounts`` returns token *accounts*, not owners, and the
@@ -193,16 +217,37 @@ class HeliusProvider:
         }
 
         fetched = self.rpc("getMultipleAccounts", [addresses, {"encoding": "jsonParsed"}])
-        holdings: list[tuple[str, float]] = []
+        owners: list[tuple[str, float]] = []
         for address, account in zip(addresses, (fetched or {}).get("value") or [], strict=False):
             if not account:
                 continue
-            owner = (
-                (account.get("data") or {}).get("parsed", {}).get("info", {}).get("owner")
-            )
+            owner = (account.get("data") or {}).get("parsed", {}).get("info", {}).get("owner")
             if owner:
-                holdings.append((str(owner), amounts.get(address, 0.0)))
-        return holdings
+                owners.append((str(owner), amounts.get(address, 0.0)))
+        if not owners:
+            return []
+
+        # Third call: what program controls each owner? A human's wallet is a
+        # System Program account. A liquidity pool vault, a bonding curve or any
+        # other protocol-controlled balance is a PDA owned by its own program.
+        #
+        # This distinction is what a hand-maintained address list cannot keep up
+        # with. Measured on live launchpad candidates, an address-list approach
+        # left bonding curves counted as holders and reported concentrations of
+        # 97-99% for perfectly ordinary tokens -- the same defect as the gross
+        # figure it replaced, one step further along.
+        owner_accounts = self.rpc(
+            "getMultipleAccounts",
+            [[owner for owner, _amount in owners], {"encoding": "jsonParsed"}],
+        )
+        programs = [
+            str((account or {}).get("owner") or "")
+            for account in (owner_accounts or {}).get("value") or []
+        ]
+        return [
+            HolderStake(owner=owner, amount=amount, owner_program=program)
+            for (owner, amount), program in zip(owners, programs, strict=False)
+        ]
 
     def simulate_unsigned_transaction(
         self, transaction_base64: str, replace_recent_blockhash: bool = True
