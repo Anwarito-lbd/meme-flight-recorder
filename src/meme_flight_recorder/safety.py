@@ -53,10 +53,17 @@ class SafetyEngine:
         if snapshot.provider_observed_at is None:
             warnings.append("provider_timestamp_missing")
 
+        # Age is tracked separately from the other failures. A token that is
+        # merely too young is not defective, it is unproven: discarding it
+        # destroys the record of what it went on to do, which is the only way
+        # to learn anything about launch-stage behaviour. Under-age candidates
+        # are therefore watched and journalled rather than thrown away.
+        too_young = False
         if snapshot.age_minutes is None:
             failures.append("token_age_unknown")
         elif snapshot.age_minutes < limits.minimum_age_minutes:
-            failures.append("token_too_young_for_universe")
+            too_young = True
+            warnings.append("token_too_young_for_universe")
 
         if snapshot.liquidity_usd is None:
             failures.append("liquidity_unknown")
@@ -121,7 +128,7 @@ class SafetyEngine:
         status = (
             CandidateStatus.REJECT if failures else CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW
         )
-        if snapshot.universe == Universe.SOLANA_LAUNCH and not failures:
+        if not failures and (snapshot.universe == Universe.SOLANA_LAUNCH or too_young):
             status = CandidateStatus.MONITOR
         return SafetyDecision(status, tuple(failures), tuple(warnings), now)
 

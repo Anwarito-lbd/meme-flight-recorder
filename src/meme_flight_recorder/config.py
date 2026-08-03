@@ -43,6 +43,34 @@ class ClusterLimits:
 
 
 @dataclass(frozen=True)
+class MicroCapitalLimits:
+    """Sizing rules for accounts too small for percentage-of-equity risk.
+
+    At $40 of equity the standard 0.25% Solana rule yields a $0.10 position,
+    which is not a trade. Below ``equity_threshold_usd`` the engine switches to
+    catastrophic-loss sizing: the position *is* the risk, because a meme coin
+    can reach zero or become unsellable regardless of any chart stop.
+
+    The liquidity rule is expressed as a share of the pool rather than an
+    absolute floor, because an absolute floor silently encodes an account size.
+    ``minimum_pool_liquidity_usd`` is the backstop that stops the ratio from
+    walking a tiny order into a pool nobody can exit.
+    """
+
+    equity_threshold_usd: float = 100.0
+    max_position_usd: float = 10.0
+    minimum_viable_position_usd: float = 3.0
+    maximum_round_trip_cost_pct: float = 8.0
+    maximum_pool_share_pct: float = 0.5
+    minimum_pool_liquidity_usd: float = 5_000.0
+    # Under catastrophic-loss sizing risk equals position, so the standard
+    # aggregate-risk cap (1% of equity) would reject every trade it sizes. The
+    # meaningful limit at this scale is how much of the account may sit in open
+    # positions at once.
+    maximum_aggregate_open_position_pct: float = 50.0
+
+
+@dataclass(frozen=True)
 class RiskLimits:
     risk_per_cex_trade_pct: float
     capital_at_risk_per_solana_trade_pct: float
@@ -62,6 +90,7 @@ class Settings:
     solana_safety: SafetyLimits
     risk: RiskLimits
     clusters: ClusterLimits = ClusterLimits()
+    micro: MicroCapitalLimits = MicroCapitalLimits()
 
     def __post_init__(self) -> None:
         if self.execution_mode != "paper":
@@ -89,9 +118,12 @@ def load_settings(path: str | Path | None = None) -> Settings:
         stale_after_seconds=int(system["stale_after_seconds"]),
         cex_safety=_safety(data["safety"]["cex"]),
         solana_safety=_safety(data["safety"]["solana_emerging"]),
-        risk=RiskLimits(**data["risk"]),
+        # [risk.micro] parses as a nested table inside [risk], so it must be
+        # split out before the flat RiskLimits fields are expanded.
+        risk=RiskLimits(**{k: v for k, v in data["risk"].items() if k != "micro"}),
         # Absent section keeps the strict dataclass defaults rather than
         # disabling the gates, so an older config file cannot silently opt out
         # of cluster detection.
         clusters=ClusterLimits(**data["safety"].get("clusters", {})),
+        micro=MicroCapitalLimits(**data["risk"].get("micro", {})),
     )

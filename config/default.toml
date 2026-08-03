@@ -1,7 +1,7 @@
 [system]
 execution_mode = "paper"
 database_path = "data/flight_recorder.db"
-starting_equity_usd = 10.0
+starting_equity_usd = 40.0
 stale_after_seconds = 120
 
 [safety.cex]
@@ -13,7 +13,10 @@ maximum_top10_private_holder_pct = 25.0
 
 [safety.solana_emerging]
 minimum_age_minutes = 60
-minimum_liquidity_usd = 50000.0
+# The absolute backstop only. Whether an order is too large for this pool is a
+# position-size question, enforced by [risk.micro].maximum_pool_share_pct, and
+# duplicating it here as a fixed floor would silently encode an account size.
+minimum_liquidity_usd = 5000.0
 maximum_entry_price_impact_pct = 2.0
 maximum_exit_price_impact_pct = 3.0
 maximum_top10_private_holder_pct = 30.0
@@ -44,3 +47,18 @@ maximum_daily_loss_pct = 1.0
 maximum_open_positions = 2
 maximum_aggregate_open_risk_pct = 1.0
 consecutive_loss_limit = 3
+
+[risk.micro]
+# Below equity_threshold_usd, percentage-of-equity sizing produces positions too
+# small to execute (0.25% of $40 is $0.10). Sizing switches to catastrophic-loss
+# logic: the position is the risk, because a thin meme coin can reach zero or
+# stop being sellable before any stop can fill.
+equity_threshold_usd = 100.0
+max_position_usd = 10.0
+minimum_viable_position_usd = 3.0
+maximum_round_trip_cost_pct = 8.0
+# Liquidity is gated as a share of the pool the order actually routes through,
+# with an absolute backstop. An absolute floor alone encodes an account size.
+maximum_pool_share_pct = 0.5
+minimum_pool_liquidity_usd = 5000.0
+maximum_aggregate_open_position_pct = 50.0

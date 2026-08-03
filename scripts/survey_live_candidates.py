@@ -17,8 +17,11 @@ import argparse
 from collections import Counter
 from datetime import UTC, datetime
 
+from dataclasses import replace
+
 from meme_flight_recorder.clusters import assess_vendor_labels
 from meme_flight_recorder.config import load_settings
+from meme_flight_recorder.enrichment import enrich_snapshot
 from meme_flight_recorder.models import CandidateStatus
 from meme_flight_recorder.providers.binance_web3 import (
     CHAIN_SOLANA,
@@ -27,6 +30,9 @@ from meme_flight_recorder.providers.binance_web3 import (
     RANK_NEW,
     BinanceWeb3Provider,
 )
+from meme_flight_recorder.providers.dexscreener import DexScreenerProvider
+from meme_flight_recorder.providers.helius import HeliusProvider
+from meme_flight_recorder.providers.jupiter import JupiterQuoteProvider
 from meme_flight_recorder.safety import SafetyEngine
 
 STAGES = {"new": RANK_NEW, "finalizing": RANK_FINALIZING, "migrated": RANK_MIGRATED}
@@ -38,6 +44,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--chain", default=CHAIN_SOLANA)
     parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--enrich",
+        action="store_true",
+        help="Resolve identity, authorities, routes and impact before gating.",
+    )
+    parser.add_argument("--order-sol", type=float, default=0.05)
     arguments = parser.parse_args()
 
     settings = load_settings(arguments.config)
@@ -52,15 +64,55 @@ def main() -> int:
         chain_id=arguments.chain, rank_type=STAGES[arguments.stage], limit=arguments.limit
     )
 
+    mint_provider = None
+    quote_provider = None
+    dex_provider = None
+    if arguments.enrich:
+        quote_provider = JupiterQuoteProvider()
+        dex_provider = DexScreenerProvider()
+        try:
+            mint_provider = HeliusProvider()
+        except ValueError as error:
+            # Enrichment degrades rather than guessing: without a Solana RPC the
+            # authority and identity fields stay unknown and keep failing closed.
+            print(f"note: Helius unavailable ({error}); authority evidence stays unknown.\n")
+
     now = datetime.now(UTC)
     failures: Counter[str] = Counter()
     statuses: Counter[str] = Counter()
     cluster_verdicts: Counter[str] = Counter()
+    coverage: list[float] = []
 
     for row in rows:
         cluster = assess_vendor_labels(row.labels, settings.clusters)
         cluster_verdicts[cluster.verdict.value] += 1
-        decision = engine.evaluate(row.to_snapshot(observed_at=now), now, cluster=cluster)
+        snapshot = row.to_snapshot(observed_at=now)
+
+        if arguments.enrich:
+            if dex_provider is not None:
+                try:
+                    pair = dex_provider.deepest_pair(row.contract_address)
+                except Exception:  # noqa: BLE001 - a dead provider must not pass a gate
+                    pair = None
+                if pair is not None:
+                    # Pair age and pool depth are what a trade actually routes
+                    # through, so they override the feed's token-level numbers.
+                    snapshot = replace(
+                        snapshot,
+                        liquidity_usd=pair.liquidity_usd,
+                        age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
+                        price_usd=pair.price_usd or snapshot.price_usd,
+                        volume_5m_usd=pair.volume_5m_usd,
+                    )
+            snapshot, report = enrich_snapshot(
+                snapshot,
+                mint_provider=mint_provider,
+                quote_provider=quote_provider,
+                intended_order_sol=arguments.order_sol,
+            )
+            coverage.append(report.coverage_pct)
+
+        decision = engine.evaluate(snapshot, now, cluster=cluster)
         statuses[decision.status.value] += 1
         failures.update(decision.failures)
 
@@ -77,6 +129,11 @@ def main() -> int:
     print("\nrejection reasons (most frequent first)")
     for reason, count in failures.most_common():
         print(f"  {count:4d}  {reason}")
+
+    if coverage:
+        average = sum(coverage) / len(coverage)
+        print(f"\nevidence coverage: {average:.1f}% average across candidates")
+        print("  (low coverage means the data was bad, not that the tokens were)")
 
     survivors = statuses.get(CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value, 0)
     monitors = statuses.get(CandidateStatus.MONITOR.value, 0)
