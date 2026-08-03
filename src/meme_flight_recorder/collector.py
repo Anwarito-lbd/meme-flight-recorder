@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .clusters import assess_vendor_labels
+from .confidence import score_confidence
 from .config import Settings
 from .enrichment import enrich_snapshot
 from .journal import FlightRecorder
@@ -205,6 +206,24 @@ class Collector:
         cluster = assess_vendor_labels(row.labels, self.settings.clusters)
         decision = self.safety.evaluate(snapshot, observed_at, cluster=cluster)
 
+        # Recorded, never acted upon. Whether this score predicts anything is a
+        # question for calibration once completed trades exist; using it to size
+        # today would be a belief rather than a measurement.
+        confidence = score_confidence(
+            liquidity_usd=snapshot.liquidity_usd,
+            exit_impact_pct=snapshot.exit_price_impact_pct,
+            cluster_verdict=cluster.verdict.value,
+            buy_share_pct=(
+                100.0 * row.buy_count / (row.buy_count + row.sell_count)
+                if row.buy_count is not None
+                and row.sell_count is not None
+                and (row.buy_count + row.sell_count) > 0
+                else None
+            ),
+            age_minutes=snapshot.age_minutes,
+            evidence_coverage_pct=coverage,
+        )
+
         # append_once keeps a retried or overlapping poll from writing the same
         # observation twice, while still allowing the same mint to be recorded
         # again on the next cycle. That repetition is the time series.
@@ -231,6 +250,9 @@ class Collector:
                 "cluster_verdict": cluster.verdict.value,
                 "cluster_confidence": cluster.confidence,
                 "cluster_metrics": cluster.metrics,
+                "confidence": confidence.value,
+                "confidence_band": confidence.band.value,
+                "confidence_missing": list(confidence.missing),
                 "evidence_coverage_pct": coverage,
             },
             idempotency_key=(

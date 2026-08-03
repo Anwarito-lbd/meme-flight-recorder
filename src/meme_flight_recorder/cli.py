@@ -37,6 +37,10 @@ def main() -> int:
         default=None,
         help="Seconds between candidates. Paces router calls under its rate limit.",
     )
+    sub.add_parser(
+        "calibrate",
+        help="Did the gates and the confidence score predict anything?",
+    )
     score = sub.add_parser(
         "score-sources", help="Rank sources by post-call expectancy after costs."
     )
@@ -61,9 +65,87 @@ def main() -> int:
         return _collect(settings, recorder, args)
     elif args.command == "score-sources":
         return _score_sources(recorder, args)
+    elif args.command == "calibrate":
+        return _calibrate(recorder)
     else:
         result = recorder.list_events(args.limit)
     print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+def _calibrate(recorder: FlightRecorder) -> int:
+    """Check whether the system's own judgement has predicted anything."""
+    from .calibration import (
+        confidence_report,
+        gate_report,
+        group_by,
+        outcomes_from_events,
+    )
+    from .providers.http import get_json
+
+    events = recorder.events_by_type("candidate_observed")
+    if not events:
+        print("No observations journalled yet. Run 'collect' first.")
+        return 1
+
+    mints = list(dict.fromkeys(event["entity_id"] for event in events))
+    prices: dict[str, float] = {}
+    for index in range(0, len(mints), 25):
+        batch = mints[index : index + 25]
+        try:
+            payload = get_json(
+                "https://api.dexscreener.com", f"/latest/dex/tokens/{','.join(batch)}"
+            )
+        except Exception as error:  # noqa: BLE001
+            # A failed batch is missing data, not a zero outcome. Reporting it
+            # keeps a silent price-lookup failure from looking like tokens that
+            # simply had no result.
+            print(f"  price batch {index // 25} unavailable: {type(error).__name__}")
+            continue
+        for pair in payload.get("pairs") or []:
+            address = ((pair.get("baseToken") or {}).get("address")) or ""
+            price = pair.get("priceUsd")
+            if address and price is not None:
+                prices[address] = float(price)
+
+    outcomes = outcomes_from_events(events, prices)
+    print(f"{len(mints)} mints observed, {len(outcomes)} with a measurable outcome\n")
+    if not outcomes:
+        print("Nothing measurable yet.")
+        return 0
+
+    def show(title: str, groups) -> None:
+        print(title)
+        header = f"  {'group':<26} {'n':>5} {'median':>8} {'dead':>6} {'>2x':>5}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for stats in groups:
+            if stats.count == 0:
+                continue
+            flag = "" if stats.reliable else "  (small)"
+            print(
+                f"  {stats.label:<26} {stats.count:>5} {stats.median_multiple:>8.2f} "
+                f"{stats.dead_pct:>5.0f}% {stats.winner_pct:>4.0f}%{flag}"
+            )
+        print()
+
+    show("by gate outcome", list(group_by(outcomes, "status").values()))
+    show("by cluster verdict", list(group_by(outcomes, "cluster_verdict").values()))
+    show("by confidence band", list(group_by(outcomes, "confidence_band").values()))
+
+    for label, result in (
+        ("gates", gate_report(outcomes)),
+        ("confidence", confidence_report(outcomes)),
+    ):
+        print(f"{label}: {result.verdict}")
+        for note in result.notes:
+            print(f"  note: {note}")
+
+    print(
+        "\nMedians, not means: one 500x drags a mean anywhere.\n"
+        "'not_yet_distinguishable' is the expected answer until the sample grows,\n"
+        "and position size must not scale with confidence until it separates."
+    )
     return 0
 
 
