@@ -55,6 +55,12 @@ consecutive_loss_limit = 3
 # stop being sellable before any stop can fill.
 equity_threshold_usd = 100.0
 max_position_usd = 10.0
+# Sized from the measured loss distribution. A replayed collapse fell from
+# $0.0522 to $0.0000303 inside one five-minute candle, straight through a stop
+# 10% below entry, so every position must be assumed recoverable at zero.
+# Observed total-loss rate was 2 of 9; at 25% per position that is ruin inside
+# ~20 trades, at 10% the account survives long enough for an edge to show.
+position_pct_of_equity = 10.0
 minimum_viable_position_usd = 3.0
 maximum_round_trip_cost_pct = 8.0
 # Liquidity is gated as a share of the pool the order actually routes through,

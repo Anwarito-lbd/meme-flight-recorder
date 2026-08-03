@@ -67,7 +67,15 @@ class MicroCapitalLimits:
     # different funding levels. The percentage binds on small accounts and the
     # dollar cap binds as funding grows, until the tier threshold hands over
     # to percentage-of-equity sizing entirely.
-    position_pct_of_equity: float = 25.0
+    #
+    # Set from the measured loss distribution, not from preference. Replaying a
+    # real collapse showed a token falling from $0.0522 to $0.0000303 inside a
+    # single five-minute candle, straight through a stop placed 10% below entry.
+    # No exit rule survives a gap like that, so every position must be assumed
+    # recoverable at zero. Observed total-loss rate was 2 of 9. At 25% of equity
+    # per position that implies ruin within roughly twenty trades; at 10% the
+    # account survives the same loss rate long enough for an edge to show.
+    position_pct_of_equity: float = 10.0
     minimum_viable_position_usd: float = 3.0
     maximum_round_trip_cost_pct: float = 8.0
     maximum_pool_share_pct: float = 0.5

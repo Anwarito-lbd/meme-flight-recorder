@@ -48,10 +48,20 @@ class MicroCapitalSizingTests(unittest.TestCase):
         )
 
     def test_position_equals_risk_under_catastrophic_loss_sizing(self):
+        """A replayed collapse gapped straight through its stop, so the whole
+        position must be treated as recoverable at zero."""
         decision = self._approve()
         self.assertTrue(decision.approved, decision.reason)
-        self.assertEqual(decision.position_value_usd, 10.0)
+        self.assertEqual(decision.position_value_usd, 4.0)
         self.assertEqual(decision.risk_amount_usd, decision.position_value_usd)
+
+    def test_sizing_survives_the_measured_total_loss_rate(self):
+        """Two of nine observed tokens went to zero. At 25% of equity that is
+        ruin inside ~20 trades; at 10% the account survives the same rate."""
+        equity = 40.0
+        position = self._approve().position_value_usd
+        losses_to_ruin = equity / position
+        self.assertGreaterEqual(losses_to_ruin, 10)
 
     def test_percentage_sizing_would_have_produced_an_unusable_position(self):
         """Regression guard for the reason micro mode exists."""
@@ -97,7 +107,7 @@ class MicroCapitalSizingTests(unittest.TestCase):
 
     def test_aggregate_open_position_cap_applies_instead_of_risk_cap(self):
         """Risk equals position here, so the 1%-of-equity cap cannot govern."""
-        state = replace(self.state, aggregate_open_risk_usd=15.0)
+        state = replace(self.state, aggregate_open_risk_usd=17.0)
         decision = self.engine.approve(
             Universe.SOLANA_EMERGING,
             state,
@@ -128,21 +138,29 @@ class AdaptiveFundingTests(unittest.TestCase):
         return decision.position_value_usd
 
     def test_position_scales_with_funding(self):
-        self.assertEqual(self._position(20.0), 5.0)
-        self.assertEqual(self._position(40.0), 10.0)
+        self.assertEqual(self._position(40.0), 4.0)
+        self.assertEqual(self._position(80.0), 8.0)
 
-    def test_dollar_cap_binds_once_the_account_grows(self):
-        """Percentage binds when small, the cap takes over as funding rises."""
-        self.assertEqual(self._position(80.0), 10.0)
+    def test_position_is_always_a_survivable_share_of_equity(self):
+        """Every position is assumed recoverable at zero, so no single one may
+        take a bite the account cannot absorb repeatedly."""
+        for equity in (30.0, 40.0, 60.0, 99.0):
+            self.assertLessEqual(self._position(equity), equity * 0.10 + 1e-9)
 
-    def test_a_flat_cap_would_have_risked_half_a_small_account(self):
-        """Regression guard: $10 is 25% of $40 but 50% of $20."""
-        self.assertLess(self._position(20.0), self.micro.max_position_usd)
+    def test_a_flat_cap_would_have_been_far_more_aggressive(self):
+        """Regression guard: $10 flat is 25% of a $40 account."""
+        self.assertLess(self._position(40.0), self.micro.max_position_usd)
 
     def test_tier_is_derived_from_equity(self):
         self.assertEqual(capital_tier(10.0, self.micro), CapitalTier.UNFUNDED)
         self.assertEqual(capital_tier(40.0, self.micro), CapitalTier.MICRO)
         self.assertEqual(capital_tier(5_000.0, self.micro), CapitalTier.STANDARD)
+
+    def test_an_account_below_thirty_dollars_cannot_size_a_viable_position(self):
+        """At 10% of equity, $30 is the floor where a $3 position is possible.
+        Naming that is more honest than emitting orders that cannot fill."""
+        self.assertEqual(capital_tier(29.0, self.micro), CapitalTier.UNFUNDED)
+        self.assertEqual(capital_tier(30.0, self.micro), CapitalTier.MICRO)
 
     def test_unfunded_account_is_named_not_silently_undersized(self):
         decision = self.engine.approve(
@@ -186,12 +204,12 @@ class PoolRelativeLiquidityTests(unittest.TestCase):
         self.assertEqual(decision.reason, "pool_liquidity_below_backstop")
 
     def test_order_exceeding_pool_share_is_rejected(self):
-        engine = RiskEngine(RISK, MicroCapitalLimits(minimum_pool_liquidity_usd=1_000.0))
+        engine = RiskEngine(RISK, MicroCapitalLimits(minimum_pool_liquidity_usd=500.0))
         decision = engine.approve(
             Universe.SOLANA_EMERGING,
             self.state,
             1.0,
-            pool_liquidity_usd=1_500.0,
+            pool_liquidity_usd=700.0,
             estimated_round_trip_cost_pct=4.0,
         )
         self.assertFalse(decision.approved)

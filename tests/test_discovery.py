@@ -115,6 +115,33 @@ class MoverFilterTests(unittest.TestCase):
         movers, _ = select_movers(_payload(quiet, _pool()))
         self.assertEqual(movers[0].symbol, "CATE")
 
+    def test_it_discriminates_the_real_matched_pair(self):
+        """Two tokens, one ticker, opposite outcomes. The filter must split them.
+
+        Both CATEs appeared in this project's own data. The one that went to
+        -100% was seven minutes old with $519k of liquidity; the one that went
+        to +259% was eight days old. Depth did not separate them -- the dead one
+        had ample depth. Survived time did, because a pool that has traded for
+        days has demonstrated it is not a bundled launch waiting to gap, and gap
+        risk is the one risk a stop cannot manage.
+        """
+        dead = _pool(
+            mint="9SNEJJGhpVVSmj8vJp2pxdn5prUtoJ7iZetbisNZpump",
+            liquidity=519_203.0,
+            volume_24h=2_000_000.0,
+            age_hours=7 / 60,
+        )
+        alive = _pool()  # the winning CATE profile
+
+        movers, skipped = select_movers(_payload(dead, alive))
+        self.assertEqual([pool.mint for pool in movers], [WINNING_CATE])
+        self.assertEqual(skipped, {"pool_too_new": 1})
+
+    def test_ample_liquidity_does_not_rescue_a_brand_new_pool(self):
+        """Half a million dollars of depth is not evidence of survival."""
+        _, skipped = select_movers(_payload(_pool(liquidity=519_203.0, age_hours=0.1)))
+        self.assertEqual(skipped, {"pool_too_new": 1})
+
     def test_filter_is_a_budget_gate_not_a_safety_gate(self):
         """Acceptance only means 'worth enriching', never 'safe to trade'."""
         movers, _ = select_movers(_payload(_pool()), MoverFilter())
