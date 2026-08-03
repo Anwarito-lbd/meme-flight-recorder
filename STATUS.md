@@ -65,6 +65,44 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## Pool depth is the first filter that survived its own test
+
+Measured 2026-08-03 with `scripts/study_structural_entry.py` over 1,694
+journalled mints with resolved outcomes, entering at each mint's *first*
+observation and holding. Costs charged at the measured 2.288% round trip.
+
+| arm | n | median | dead | >=2x | >=5x | EV/$1 | EV without top 3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| tradeable (>=$5k) — *baseline* | 257 | 0.164 | 43% | 14.8% | 5.4% | +0.836 | +0.072 |
+| **deep (>=$50k)** | 63 | 0.208 | 49% | 23.8% | 9.5% | **+2.968** | **+0.264** |
+| deep + dev exhausted | 4 | — | — | — | — | too few | too few |
+
+**`deep (>=$50k)` is the first filter this project has found that beats the base
+rate and still beats it after its three largest winners are removed** — 3.6x the
+baseline on the tail-adjusted number. Every earlier candidate failed that second
+test: flow was withdrawn on it, and the cluster and deployer gates turned out to
+measure survival rather than return.
+
+Note the shape. Deep pools die *more* (49% vs 43%) and pay far more when they
+run (23.8% reach 2x vs 14.8%). This is a return filter, not a risk filter, which
+is exactly the thing the system was missing — the safety gates were never going
+to supply it.
+
+Three cautions before sizing on this. n=63 on one collection window. The median
+is still 0.208, so this remains a lottery, just a better-paying one. And
+outcomes come only from tokens still quoted today, so it is an upper bound.
+Re-run on a frozen multi-day cohort before it changes any behaviour.
+
+Combining both filters is untestable here: `deep + dev exhausted` has n=4. The
+two filters are too restrictive together on this sample.
+
+**One methodological note.** The first version of this study used an unfiltered
+baseline and produced an EV of +130,273 per dollar, because the unfiltered set is
+dominated by tokens with no liquidity — including one nominal 2,176,870x in a
+$0.00 pool. `study_return_distribution.py` already excluded those; the entry
+study initially did not. The baseline is now the tradeable universe, which is
+what the system would do today without any new rule.
+
 ## The binding constraint is bankroll, not signal
 
 Measured 2026-08-03 with `scripts/study_return_distribution.py`, over candidates
