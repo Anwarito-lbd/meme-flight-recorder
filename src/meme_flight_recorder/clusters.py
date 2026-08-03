@@ -157,12 +157,21 @@ def assess_vendor_labels(labels: Any, limits: ClusterLimits) -> ClusterAssessmen
         if value is True:
             failures.append(failure)
 
+    # Developer distribution is a band, not a flag. Below the lower bound is
+    # dust; at or above the upper bound the developer has exited and has no
+    # supply left to sell, which is the state that measured *safest*. What
+    # rejects is the middle: still holding, and actively selling into buyers.
+    # See ClusterLimits.maximum_dev_sell_pct for the measurement behind this.
     dev_sell = getattr(labels, "dev_sell_pct", None)
     metrics["dev_sell_pct"] = dev_sell
     if dev_sell is not None:
         present += 1
-        if dev_sell > limits.maximum_dev_sell_pct:
+        if limits.maximum_dev_sell_pct < dev_sell < limits.exhausted_dev_sell_pct:
             failures.append("vendor_developer_distribution")
+        elif dev_sell >= limits.exhausted_dev_sell_pct:
+            # Not a pass on its own -- it says the overhang is gone, which is a
+            # fact worth carrying rather than silently discarding.
+            warnings.append("developer_supply_exhausted")
 
     # A developer who has migrated many prior tokens is a serial launcher. That
     # is not disqualifying on its own, but it materially raises the prior.

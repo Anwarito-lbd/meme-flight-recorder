@@ -192,9 +192,10 @@ class Collector:
     ) -> tuple[str, tuple[str, ...]]:
         snapshot = row.to_snapshot(observed_at=observed_at)
         coverage: float | None = None
+        pair: Any | None = None
 
         if self.config.enrich:
-            snapshot = self._apply_pair_evidence(snapshot, row.contract_address)
+            snapshot, pair = self._apply_pair_evidence(snapshot, row.contract_address)
             snapshot, report = enrich_snapshot(
                 snapshot,
                 mint_provider=self.mint_provider,
@@ -244,6 +245,21 @@ class Collector:
                 "age_minutes": snapshot.age_minutes,
                 "entry_price_impact_pct": snapshot.entry_price_impact_pct,
                 "exit_price_impact_pct": snapshot.exit_price_impact_pct,
+                # Flow inputs. These were previously computed for the confidence
+                # score and then discarded, which left the journal holding a
+                # conclusion whose evidence no longer existed. Transaction counts
+                # are recorded under names that say "txns", never "buyers": one
+                # wallet can generate a hundred buys, and the distinction between
+                # a count and a unique address is the whole of Stage 6.
+                "buy_txns_total": row.buy_count,
+                "sell_txns_total": row.sell_count,
+                "buy_txns_5m": getattr(pair, "buy_txns_5m", None),
+                "sell_txns_5m": getattr(pair, "sell_txns_5m", None),
+                "volume_5m_usd": snapshot.volume_5m_usd,
+                "volume_1h_usd": getattr(pair, "volume_1h_usd", None),
+                "volume_24h_usd": getattr(pair, "volume_24h_usd", None),
+                "volume_to_liquidity_5m": getattr(pair, "volume_to_liquidity_5m", None),
+                "pair_address": getattr(pair, "pair_address", None),
                 "status": decision.status.value,
                 "failures": list(decision.failures),
                 "warnings": list(decision.warnings),
@@ -262,20 +278,31 @@ class Collector:
         )
         return decision.status.value, decision.failures
 
-    def _apply_pair_evidence(self, snapshot: TokenSnapshot, mint: str) -> TokenSnapshot:
-        """Overlay pool-level facts, which describe the trade's actual route."""
+    def _apply_pair_evidence(
+        self, snapshot: TokenSnapshot, mint: str
+    ) -> tuple[TokenSnapshot, Any | None]:
+        """Overlay pool-level facts, which describe the trade's actual route.
+
+        The pair itself is returned alongside the snapshot rather than discarded,
+        because flow analysis needs the volume and transaction-count fields the
+        snapshot has no home for. Dropping them here is what left the journal
+        unable to answer whether demand was organic.
+        """
         if self.pair_provider is None:
-            return snapshot
+            return snapshot, None
         try:
             pair = self.pair_provider.deepest_pair(mint)
         except Exception:  # noqa: BLE001 - a dead provider must not pass a gate
-            return snapshot
+            return snapshot, None
         if pair is None:
-            return snapshot
-        return replace(
-            snapshot,
-            liquidity_usd=pair.liquidity_usd,
-            age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
-            price_usd=pair.price_usd or snapshot.price_usd,
-            volume_5m_usd=pair.volume_5m_usd,
+            return snapshot, None
+        return (
+            replace(
+                snapshot,
+                liquidity_usd=pair.liquidity_usd,
+                age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
+                price_usd=pair.price_usd or snapshot.price_usd,
+                volume_5m_usd=pair.volume_5m_usd,
+            ),
+            pair,
         )

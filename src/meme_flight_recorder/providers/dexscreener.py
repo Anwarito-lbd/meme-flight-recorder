@@ -129,6 +129,44 @@ class DexScreenerProvider:
         pairs = self.pairs_for_token(token_address)
         return pairs[0] if pairs else None
 
+    def prices_for_tokens(
+        self, token_addresses: list[str], chunk: int = 25
+    ) -> dict[str, float]:
+        """Look up current prices for many mints, batched within provider limits.
+
+        Used by the outcome studies, which need to know what happened to a
+        few hundred journalled candidates at once.
+
+        A failed batch is *missing data*, not a zero price. Returning zero for
+        an unreachable token would silently convert an API problem into a
+        finding that the token died -- the exact class of error that has already
+        produced one fabricated result in this project. Absent mints are simply
+        absent from the returned mapping, so callers must count them.
+        """
+        prices: dict[str, float] = {}
+        deepest: dict[str, float] = {}
+        for index in range(0, len(token_addresses), chunk):
+            batch = token_addresses[index : index + chunk]
+            try:
+                payload = get_json(
+                    BASE_URL, f"/latest/dex/tokens/{','.join(batch)}", timeout=self.timeout
+                )
+            except Exception as error:  # noqa: BLE001 - one dead batch must not end the run
+                print(f"  price batch {index // chunk}: {type(error).__name__}: {error}")
+                continue
+            for pair in payload.get("pairs") or []:
+                address = str((pair.get("baseToken") or {}).get("address") or "")
+                price = _as_float(pair.get("priceUsd"))
+                if not address or price is None:
+                    continue
+                # A mint quoted in several pools takes the deepest pool's price,
+                # which is the one an order would actually route through.
+                liquidity = _as_float((pair.get("liquidity") or {}).get("usd")) or 0.0
+                if liquidity >= deepest.get(address, -1.0):
+                    deepest[address] = liquidity
+                    prices[address] = price
+        return prices
+
     def total_liquidity_usd(self, token_address: str) -> float | None:
         pairs = self.pairs_for_token(token_address)
         values = [pair.liquidity_usd for pair in pairs if pair.liquidity_usd is not None]

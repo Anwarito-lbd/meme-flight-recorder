@@ -28,7 +28,14 @@ maximum_insider_pct = 15.0
 maximum_sniper_pct = 15.0
 maximum_bundler_pct = 5.0
 maximum_fresh_wallet_pct = 20.0
-maximum_dev_sell_pct = 0.0
+# Developer distribution as a band, not a flag. Below the lower bound is dust
+# (a candidate was once rejected on 1.47e-08 percent of supply); at or above the
+# upper bound the developer has fully exited and holds no supply left to sell,
+# which measured as the *safest* state across 871 mints -- 7% death versus 28%
+# for tokens whose developer had sold nothing. What rejects is the middle:
+# still holding, and selling into the buyers it attracted.
+maximum_dev_sell_pct = 1.0
+exhausted_dev_sell_pct = 50.0
 maximum_dev_prior_launches = 2
 minimum_vendor_confidence = 0.6
 

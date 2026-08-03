@@ -31,7 +31,37 @@ class ClusterLimits:
     maximum_sniper_pct: float = 15.0
     maximum_bundler_pct: float = 5.0
     maximum_fresh_wallet_pct: float = 20.0
-    maximum_dev_sell_pct: float = 0.0
+
+    # Developer distribution, as a band rather than a flag.
+    #
+    # This was 0.0, meaning any nonzero value rejected. Measured across 871
+    # journalled mints with resolved outcomes, that gate ran backwards on the
+    # only thing a risk gate is for. Tokens whose developer had sold >=50% of
+    # supply died 7% of the time; tokens with no developer selling at all died
+    # 28%. The effect held inside every lifecycle stage (new 1% vs 19%,
+    # finalizing 11% vs 32%, migrated 18% vs 35%) and held coverage-matched, so
+    # it is neither a liveness proxy nor an artifact of the vendor staying quiet
+    # about dead tokens.
+    #
+    # Mechanism, which is what licenses the change rather than the correlation:
+    # a developer who has already exited holds no supply left to sell. The
+    # overhang is spent. A token whose developer has *not* sold still has that
+    # supply pointed at it, and no stop survives the moment it arrives.
+    #
+    # A fifth of the old rejections were also dust -- one candidate was rejected
+    # on 1.47e-08 percent of supply, which is floating-point noise rather than
+    # distribution. The observed values are bimodal with almost nothing between
+    # 0.01% and 5%, so 1.0 separates noise from real selling without landing in
+    # a populated region.
+    #
+    # What now rejects is the middle: a developer actively distributing while
+    # still holding. Recorded honestly, that band had only 4 measured outcomes,
+    # so the new gate's active range is the part we know least about. It is
+    # justified by mechanism, not by its own measurement, and should be revisited
+    # once the collector has journalled more of it.
+    maximum_dev_sell_pct: float = 1.0
+    exhausted_dev_sell_pct: float = 50.0
+
     maximum_dev_prior_launches: int = 2
     minimum_vendor_confidence: float = 0.6
 
@@ -42,6 +72,107 @@ class ClusterLimits:
     minimum_graph_confidence: float = 0.5
     reject_on_launch_bundle: bool = True
     require_bundle_evidence: bool = False
+
+
+@dataclass(frozen=True)
+class CohortLimits:
+    """What a wallet must demonstrate before it counts as worth following.
+
+    These mirror the evidence gate this system applies to its own strategy, and
+    for the same reason. A leaderboard cannot distinguish a trader from someone
+    who bought one token that went up, and the difference is the entire value of
+    the signal. Every threshold here exists to stop one lottery winner being
+    labelled smart money.
+    """
+
+    # Below this, no classification as a repeatable trader is permitted at all,
+    # regardless of how good the returns look.
+    minimum_observable_trades: int = 30
+    # A record carried by one trade is a record of one trade. The same one-third
+    # rule gates this system's own live-execution decision.
+    maximum_single_trade_profit_share: float = 0.3333
+    # Trading one token is a position, not a strategy.
+    minimum_distinct_tokens: int = 5
+    minimum_profit_factor: float = 1.2
+    # Round trips completing in seconds are sniping or arbitrage infrastructure,
+    # not a strategy a human on a five-minute polling loop can follow.
+    sniper_median_hold_seconds: float = 60.0
+    # A wallet whose buys and sells net to nothing across many transactions is
+    # manufacturing volume rather than taking positions.
+    wash_trade_net_tolerance_pct: float = 1.0
+    minimum_wash_trade_count: int = 20
+
+
+@dataclass(frozen=True)
+class DeployerLimits:
+    """Thresholds for judging who created a token.
+
+    This is a *risk* gate and must be measured as one. The project's own data
+    already showed that adverse-developer tokens outperform: the single biggest
+    winner it ever recorded was rejected for `developer_selling`. A dev actively
+    selling is a dev actively promoting. That does not make the gate wrong -- it
+    means the gate buys survival, not return, and judging it on return would
+    argue for removing the one thing standing between this account and a
+    deployer who has done this before.
+    """
+
+    # A wallet with almost no visible history cannot be cleared. It can only be
+    # unresolved -- the manual is explicit that a fresh deployer is unresolved
+    # risk rather than evidence of innocence.
+    minimum_transactions_to_clear: int = 20
+    minimum_wallet_age_hours: float = 168.0
+
+    # Repeat launching is the strongest available adverse signal, because it is
+    # the behaviour of someone running a production line rather than a project.
+    maximum_prior_launches: int = 2
+    # Adding liquidity to a token and later removing it is the mechanical shape
+    # of a rug, independent of intent.
+    maximum_prior_liquidity_removals: int = 0
+    # Developer distribution, as a band. Mirrors ClusterLimits so the same
+    # question cannot get two different answers depending on which module asked
+    # it -- see the measurement recorded there.
+    maximum_dev_sell_pct: float = 1.0
+    exhausted_dev_sell_pct: float = 50.0
+
+
+@dataclass(frozen=True)
+class FlowLimits:
+    """Thresholds for deciding whether demand is organic.
+
+    The manual's primary organic-flow metric is unique-buyer acceleration, and
+    it is **not available here at any price this account can pay**. The free
+    pool APIs publish transaction *counts*; one wallet can generate a hundred
+    buys, so a count is not a buyer. Rather than rename a weak signal into a
+    strong one, unique-buyer metrics stay unknown and the verdict is built from
+    what can actually be observed: holder growth, liquidity persistence, and
+    manipulation tells.
+
+    That makes ORGANIC a weaker claim than the manual intends, which is the
+    honest position. It is recorded as such rather than presented as the full
+    test.
+    """
+
+    # Two observations are the minimum that can express a change at all.
+    minimum_observations: int = 2
+
+    # Required for ORGANIC. Holders must genuinely expand and the pool must not
+    # be draining while they do.
+    minimum_holder_growth_pct: float = 2.0
+    maximum_liquidity_decline_pct: float = 5.0
+
+    # A veto, not a requirement: when buy share is known and sellers dominate,
+    # demand has turned over regardless of what the holder count says. When it
+    # is unknown it does not block, because the two required signals above still
+    # have to be present on their own.
+    minimum_buy_share_pct: float = 45.0
+
+    # Manipulation tells. Each is sufficient on its own for SUSPICIOUS.
+    wash_volume_spike_multiple: float = 5.0
+    wash_flat_holder_growth_pct: float = 0.5
+    wash_flat_price_move_pct: float = 5.0
+    # Turnover of several times pool depth inside five minutes is not trading a
+    # pool this size can support organically.
+    wash_volume_to_liquidity_5m: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -154,6 +285,9 @@ class Settings:
     risk: RiskLimits
     clusters: ClusterLimits = ClusterLimits()
     micro: MicroCapitalLimits = MicroCapitalLimits()
+    flow: FlowLimits = FlowLimits()
+    deployer: DeployerLimits = DeployerLimits()
+    cohort: CohortLimits = CohortLimits()
 
     def __post_init__(self) -> None:
         if self.execution_mode != "paper":
@@ -192,4 +326,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         # of cluster detection.
         clusters=ClusterLimits(**data["safety"].get("clusters", {})),
         micro=MicroCapitalLimits(**data["risk"].get("micro", {})),
+        flow=FlowLimits(**data["safety"].get("flow", {})),
+        deployer=DeployerLimits(**data["safety"].get("deployer", {})),
+        cohort=CohortLimits(**data["safety"].get("cohort", {})),
     )
