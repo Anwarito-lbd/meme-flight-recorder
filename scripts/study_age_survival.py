@@ -16,7 +16,6 @@ Read-only.
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 from collections import defaultdict
 from typing import Any
