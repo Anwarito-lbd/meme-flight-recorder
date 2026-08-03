@@ -318,3 +318,43 @@ def test_both_payload_shapes_agree_on_the_same_economic_event() -> None:
     )
     assert enhanced.trade_count == wallet_api.trade_count == 1
     assert round(enhanced.trades[0].pnl_sol, 6) == round(wallet_api.trades[0].pnl_sol, 6)
+
+
+def token_to_token_tx(minutes: float, sold: str, bought: str) -> dict:
+    return {
+        "timestamp": stamp(minutes),
+        "balanceChanges": [
+            {"mint": sold, "amount": -1000.0, "decimals": 0},
+            {"mint": bought, "amount": 500.0, "decimals": 0},
+        ],
+    }
+
+
+def test_token_to_token_swap_is_counted_not_silently_dropped() -> None:
+    """A skipped swap must not look like a wallet that did not trade.
+
+    Measured across 8,100 real transactions, 4.5% were token-to-token swaps
+    this method cannot price. Dropping them silently makes an unreadable wallet
+    indistinguishable from an inactive one.
+    """
+    profile = profile_wallet("W1", [token_to_token_tx(0, "MINT_A", "MINT_B")])
+    assert profile.trade_count == 0
+    assert profile.unpriceable_swaps == 1
+    assert profile.distinct_tokens == 2
+
+
+def test_coverage_reports_how_much_was_readable() -> None:
+    history = [
+        balance_change_tx(0, "MINT_A", 1000.0, -1.0),
+        balance_change_tx(60, "MINT_A", -1000.0, 1.5),
+        token_to_token_tx(120, "MINT_C", "MINT_D"),
+        token_to_token_tx(180, "MINT_E", "MINT_F"),
+    ]
+    profile = profile_wallet("W1", history, history_truncated=False)
+    assert profile.priceable_transactions == 2
+    assert profile.unpriceable_swaps == 2
+    assert profile.coverage_pct == 50.0
+
+
+def test_coverage_is_none_when_nothing_was_observed() -> None:
+    assert profile_wallet("W1", []).coverage_pct is None

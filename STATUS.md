@@ -113,22 +113,46 @@ With 1,200-1,400 transactions cached per wallet:
 | traderpow | 1,200 | 0 | 453 | 0.00 | n/a | insufficient_history |
 | cifwifhatday.sol | 1,400 | 0 | 74 | 0.00 | n/a | insufficient_history |
 
-**popchad.sol is the point of the whole module.** It appears on a curated
-"top trader" list. Measured over 34 completed round trips it has a profit factor
-of 0.47 and is down 126 SOL. A leaderboard sorting by realised profit, or a
-follower count, would have said the opposite. Nothing here is a reason to copy
-that wallet, and the classifier refuses to certify it.
+**popchad.sol is the point of the whole module, with an important caveat added
+after measuring coverage.** It appears on a curated "top trader" list. Over 34
+completed round trips it shows a profit factor of 0.47, down 126 SOL, and the
+classifier refuses to certify it. A leaderboard sorting by realised profit would
+have said the opposite.
+
+**But that verdict covers 12% of its activity, not all of it.** See the coverage
+section below. The honest statement is "unprofitable across the trades this
+method can price", not "unprofitable". An earlier version of this handoff said
+the latter, and it was overclaiming.
 
 Only one of six wallets even reached the 30-trade bar. Five are recorded as
 insufficient rather than assigned a flattering label from a thin record.
 
-**A limitation this exposed, stated rather than hidden.** Trade reconstruction
-pairs a token leg against a *SOL* leg. Token-to-token swaps routed through USDC
-or another quote asset are not counted, which is the likely explanation for
-traderpow showing 453 distinct tokens and zero completed round trips -- along
-with airdrop spam, which arrives without a purchase. Those wallets are not
-"inactive"; they are partly unreadable by this method, and their zero should not
-be read as a measurement.
+### Coverage: this method reads a small fraction of a wallet
+
+Trade reconstruction pairs a token leg against a *SOL* leg, so anything else is
+invisible. Measured across 8,100 real transactions from these six wallets:
+
+| transaction shape | share | readable? |
+|---|---:|---|
+| single token, no SOL leg (airdrop, transfer, burn) | 88.3% | no -- not a trade |
+| token-to-token swap | 4.5% | **no -- a trade this method cannot price** |
+| no balance changes at all | 4.0% | no |
+| SOL-paired swap | **3.2%** | yes |
+
+Per wallet, coverage runs from **0.17% to 12.07%**. Every verdict above is
+therefore a statement about a slice, and `WalletProfile.coverage_pct` now
+reports that slice so it cannot be omitted.
+
+Token-to-token swaps are counted as `unpriceable_swaps` rather than dropped. A
+silently skipped swap is indistinguishable from a wallet that did not trade,
+which is how traderpow reads as inactive at 453 distinct tokens when it is
+actually unreadable.
+
+**A metric bug caught in the act.** The first version of this coverage counter
+reported 84-96%, because it treated every non-token-to-token transaction as
+readable -- including the 88% that are airdrops. It would have presented a method
+that prices 3% of activity as covering 96% of it. Verified against the real
+distribution before being believed, which is the only reason it was caught.
 
 ## Holder concentration is measured properly for the first time
 

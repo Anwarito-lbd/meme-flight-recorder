@@ -106,6 +106,24 @@ class WalletProfile:
     # realised P&L an incomplete picture of the wallet's actual results.
     unexplained_transfers: int = 0
 
+    # How much of the wallet's activity this method could actually read.
+    #
+    # Measured across 8,100 real transactions from six wallets, only 3.2% were
+    # SOL-paired and therefore priceable; 4.5% were token-to-token swaps this
+    # method cannot value, and 88.3% were single-token events, overwhelmingly
+    # airdrop spam rather than trades. A trade count reported without this
+    # context invites the reading that a wallet with 1,400 transactions traded
+    # nine times, when what happened is that nine trades were *visible*.
+    priceable_transactions: int = 0
+    unpriceable_swaps: int = 0
+
+    @property
+    def coverage_pct(self) -> float | None:
+        """Share of transactions this method could price. None when unknown."""
+        if self.transactions_observed <= 0:
+            return None
+        return round(100.0 * self.priceable_transactions / self.transactions_observed, 2)
+
     # Not reconstructable from wallet history. Present so their absence is
     # visible rather than silently omitted from any scoring that follows.
     average_entry_market_cap_usd: float | None = None
@@ -289,6 +307,8 @@ def profile_wallet(
     mints_created: list[str] = []
     liquidity_events = 0
     unexplained = 0
+    priceable = 0
+    unpriceable = 0
     seen_mints: set[str] = set()
 
     for transaction in ordered:
@@ -305,6 +325,27 @@ def profile_wallet(
         sol, tokens = swap_legs(transaction, address)
         if not tokens or moment is None:
             continue
+
+        moved = [delta for delta in tokens.values() if delta != 0]
+        if sol == 0 and len(moved) >= 2:
+            # A token-to-token swap. Valuing it needs a price for one leg at
+            # that timestamp, which this data does not carry. Counted rather
+            # than dropped: a silently skipped swap is indistinguishable from a
+            # wallet that did not trade, and that is the reading to avoid.
+            unpriceable += 1
+            for mint in tokens:
+                seen_mints.add(mint)
+            continue
+
+        if sol == 0:
+            # A single-token event with no SOL leg: an airdrop, a transfer in or
+            # out, a burn. Not a trade and not priceable, and by far the most
+            # common thing in a memecoin wallet -- 88% of 8,100 real
+            # transactions. Counting it as readable would report 96% coverage
+            # for a method that can actually price 3%.
+            continue
+
+        priceable += 1
 
         for mint, delta in tokens.items():
             if delta == 0:
@@ -355,6 +396,8 @@ def profile_wallet(
         mints_created=tuple(mints_created),
         liquidity_events=liquidity_events,
         unexplained_transfers=unexplained,
+        priceable_transactions=priceable,
+        unpriceable_swaps=unpriceable,
     )
 
 
