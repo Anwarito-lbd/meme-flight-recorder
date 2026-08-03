@@ -65,6 +65,44 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## The bot exists now, and cannot yet open a position. Here is exactly why.
+
+`cli collect --paper-trade` opens, manages and closes paper positions
+(`monitor.py`, `position_store.py`), and `scripts/report_track_record.py` scores
+the result against the evidence gate. It cannot sign or broadcast;
+`tests/test_no_live_execution.py` is unmodified.
+
+Zero positions have opened, for a reason worth stating precisely rather than
+tuning away.
+
+**The gates were designed around the launchpad feed, and the good population
+cannot satisfy them.** The deep-pool filter that survived its own tail test
+needs pools >=$50k, which barely exist on the launchpad feed (median pool $26,
+~3% qualify). Pointing the collector at established movers with
+`--source movers` fixes the population -- and every candidate is then rejected
+for `developer_activity_unknown`, `holder_concentration_unknown` and
+`cluster_evidence_insufficient`, because the trending feed carries no vendor
+cluster labels and the gates fail closed on missing evidence.
+
+So the two feeds have opposite problems:
+
+| feed | population | evidence |
+|---|---|---|
+| launchpad (`meme_rush`) | median pool $26; deep pools ~3% | vendor labels present, gates satisfiable |
+| movers (trending pools) | pools that actually qualify | no vendor labels; gates fail closed |
+
+**The fix is to supply the missing evidence from chain, not to relax the gate.**
+Concretely: holder concentration and the funding graph for movers, from Helius
+`getTokenLargestAccounts` plus `clusters.assess_funding_graph`, which already
+exists and is already tested. `enrichment.py` deliberately stopped writing the
+*gross* top-10 figure into the field meaning concentration *excluding*
+infrastructure, after that bug rejected 25/25 candidates on a number describing
+the AMM pool -- so the replacement has to compute the adjusted figure properly.
+
+That is the single piece of work between this and forward trades accumulating.
+Relaxing the gates would produce trades immediately and would make every number
+that followed worthless.
+
 ## Pool depth is the first filter that survived its own test
 
 Measured 2026-08-03 with `scripts/study_structural_entry.py` over 1,694

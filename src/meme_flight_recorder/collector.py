@@ -106,9 +106,13 @@ class Collector:
         config: CollectorConfig | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monitor: Any | None = None,
+        movers_provider: Any | None = None,
     ) -> None:
         self.settings = settings
         self.recorder = recorder
+        # Established movers, when supplied. Both feeds run through the same
+        # grading path; only the population differs.
+        self.movers_provider = movers_provider
         # Optional so every existing caller and test keeps working unchanged.
         # Absent, the collector observes and records exactly as before.
         self.monitor = monitor
@@ -143,6 +147,36 @@ class Collector:
             except Exception as error:  # noqa: BLE001 - the book must not end the cycle
                 errors.append(f"monitor: {type(error).__name__}: {error}")
 
+        def absorb(status: str, failures: tuple[str, ...], candidate: dict[str, Any]) -> None:
+            nonlocal recorded
+            recorded += 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            for failure in failures:
+                failure_counts[failure] = failure_counts.get(failure, 0) + 1
+            if status == CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value:
+                eligible.append(candidate)
+
+        if self.movers_provider is not None:
+            # Established movers. This is the population the deep-pool filter was
+            # measured on: launchpad newborns had a median pool of $26, so a
+            # >=$50k rule almost never fires there and the paper book would sit
+            # empty regardless of how well the filter works.
+            try:
+                pools, skipped = self._trending_pools()
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"trending: {type(error).__name__}: {error}")
+                pools, skipped = [], {}
+            if skipped:
+                failure_counts.update({f"mover_{k}": v for k, v in skipped.items()})
+            for index, pool in enumerate(pools):
+                observed += 1
+                if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
+                    sleep(self.config.per_candidate_delay_seconds)
+                try:
+                    absorb(*self._record_pool(pool, started))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"{pool.mint}: {type(error).__name__}: {error}")
+
         for stage in self.config.stages:
             try:
                 rows = self.discovery.meme_rush(
@@ -159,16 +193,10 @@ class Collector:
                 if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
                     sleep(self.config.per_candidate_delay_seconds)
                 try:
-                    status, failures, candidate = self._record(row, stage, started)
+                    absorb(*self._record(row, stage, started))
                 except Exception as error:  # noqa: BLE001
                     errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
                     continue
-                recorded += 1
-                status_counts[status] = status_counts.get(status, 0) + 1
-                for failure in failures:
-                    failure_counts[failure] = failure_counts.get(failure, 0) + 1
-                if status == CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value:
-                    eligible.append(candidate)
 
         if self.monitor is not None and eligible:
             try:
@@ -223,12 +251,76 @@ class Collector:
     def _record(
         self, row: MemeRushRow, stage: str, observed_at: datetime
     ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
-        snapshot = row.to_snapshot(observed_at=observed_at)
+        return self._grade(
+            row.to_snapshot(observed_at=observed_at),
+            mint=row.contract_address,
+            symbol=row.symbol,
+            stage=stage,
+            observed_at=observed_at,
+            labels=row.labels,
+            buy_count=row.buy_count,
+            sell_count=row.sell_count,
+            market_cap_usd=row.market_cap_usd,
+            holders=row.holders,
+            chain_id=row.chain_id,
+        )
+
+    def _trending_pools(self) -> tuple[list[Any], dict[str, int]]:
+        """Fetch and filter established movers."""
+        from .discovery import select_movers
+
+        pools, skipped = select_movers(self.movers_provider.trending_solana_pools())
+        return list(pools)[: self.config.limit_per_stage], skipped
+
+    def _record_pool(self, pool: Any, observed_at: datetime) -> tuple[str, tuple[str, ...], dict]:
+        """Grade one trending pool through the same gates as a launchpad row.
+
+        The trending feed supplies no vendor cluster labels, so cluster evidence
+        stays unknown and the gates keep failing closed on it rather than
+        treating silence as a pass. That is the intended behaviour: this feed
+        buys a better population, not a relaxed standard.
+        """
+        from .providers.binance_web3 import VendorClusterLabels
+
+        return self._grade(
+            pool.to_snapshot(observed_at=observed_at),
+            mint=pool.mint,
+            symbol=pool.symbol,
+            stage="mover",
+            observed_at=observed_at,
+            labels=VendorClusterLabels(),
+            buy_count=pool.buys_5m,
+            sell_count=pool.sells_5m,
+            market_cap_usd=pool.market_cap_usd,
+            holders=None,
+        )
+
+    def _grade(
+        self,
+        snapshot: TokenSnapshot,
+        *,
+        mint: str,
+        symbol: str,
+        stage: str,
+        observed_at: datetime,
+        labels: Any,
+        buy_count: int | None = None,
+        sell_count: int | None = None,
+        market_cap_usd: float | None = None,
+        holders: int | None = None,
+        chain_id: str = CHAIN_SOLANA,
+    ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
+        """Enrich, gate and journal one candidate, whatever feed produced it.
+
+        Shared by both discovery sources on purpose. The safety argument does not
+        change with the feed -- only the population does -- so a second grading
+        path would be a second place for the gates to drift.
+        """
         coverage: float | None = None
         pair: Any | None = None
 
         if self.config.enrich:
-            snapshot, pair = self._apply_pair_evidence(snapshot, row.contract_address)
+            snapshot, pair = self._apply_pair_evidence(snapshot, mint)
             snapshot, report = enrich_snapshot(
                 snapshot,
                 mint_provider=self.mint_provider,
@@ -237,7 +329,7 @@ class Collector:
             )
             coverage = report.coverage_pct
 
-        cluster = assess_vendor_labels(row.labels, self.settings.clusters)
+        cluster = assess_vendor_labels(labels, self.settings.clusters)
         decision = self.safety.evaluate(snapshot, observed_at, cluster=cluster)
 
         # Recorded, never acted upon. Whether this score predicts anything is a
@@ -248,10 +340,10 @@ class Collector:
             exit_impact_pct=snapshot.exit_price_impact_pct,
             cluster_verdict=cluster.verdict.value,
             buy_share_pct=(
-                100.0 * row.buy_count / (row.buy_count + row.sell_count)
-                if row.buy_count is not None
-                and row.sell_count is not None
-                and (row.buy_count + row.sell_count) > 0
+                100.0 * buy_count / (buy_count + sell_count)
+                if buy_count is not None
+                and sell_count is not None
+                and (buy_count + sell_count) > 0
                 else None
             ),
             age_minutes=snapshot.age_minutes,
@@ -263,15 +355,15 @@ class Collector:
         # again on the next cycle. That repetition is the time series.
         payload = {
                 "stage": stage,
-                "chain_id": row.chain_id,
-                "symbol": row.symbol,
+                "chain_id": chain_id,
+                "symbol": symbol,
                 "observed_at": observed_at.isoformat(),
                 # Forward returns are computed against these later, so they must
                 # be captured now rather than looked up at scoring time.
                 "price_usd": snapshot.price_usd,
                 "liquidity_usd": snapshot.liquidity_usd,
-                "market_cap_usd": row.market_cap_usd,
-                "holders": row.holders,
+                "market_cap_usd": market_cap_usd,
+                "holders": holders,
                 "age_minutes": snapshot.age_minutes,
                 "entry_price_impact_pct": snapshot.entry_price_impact_pct,
                 "exit_price_impact_pct": snapshot.exit_price_impact_pct,
@@ -281,8 +373,8 @@ class Collector:
                 # are recorded under names that say "txns", never "buyers": one
                 # wallet can generate a hundred buys, and the distinction between
                 # a count and a unique address is the whole of Stage 6.
-                "buy_txns_total": row.buy_count,
-                "sell_txns_total": row.sell_count,
+                "buy_txns_total": buy_count,
+                "sell_txns_total": sell_count,
                 "buy_txns_5m": getattr(pair, "buy_txns_5m", None),
                 "sell_txns_5m": getattr(pair, "sell_txns_5m", None),
                 "volume_5m_usd": snapshot.volume_5m_usd,
@@ -303,17 +395,17 @@ class Collector:
         }
         self.recorder.append_once(
             EVENT_CANDIDATE_OBSERVED,
-            entity_id=row.contract_address,
+            entity_id=mint,
             payload=payload,
             idempotency_key=(
-                f"{EVENT_CANDIDATE_OBSERVED}:{row.contract_address}:"
+                f"{EVENT_CANDIDATE_OBSERVED}:{mint}:"
                 f"{observed_at.isoformat(timespec='seconds')}"
             ),
         )
         # The monitor needs the mint alongside the journalled fields; the
         # payload itself is keyed by entity_id in the journal and does not
         # carry it.
-        return decision.status.value, decision.failures, payload | {"mint": row.contract_address}
+        return decision.status.value, decision.failures, payload | {"mint": mint}
 
     def _apply_pair_evidence(
         self, snapshot: TokenSnapshot, mint: str

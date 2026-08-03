@@ -25,6 +25,16 @@ def main() -> int:
         "--cycles", type=int, default=None, help="Stop after N cycles (default: run forever)."
     )
     collect.add_argument("--stages", default="new,finalizing,migrated")
+    collect.add_argument(
+        "--source",
+        choices=["launchpad", "movers", "both"],
+        default="launchpad",
+        help=(
+            "Which population to poll. 'movers' adds established trending pools, "
+            "which is where the deep-pool filter actually finds candidates -- "
+            "launchpad newborns had a median pool of $26."
+        ),
+    )
     collect.add_argument("--no-enrich", action="store_true")
     collect.add_argument(
         "--allow-sleep",
@@ -259,7 +269,16 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             f"max {args.max_open} open. No key is loaded and nothing can be signed."
         )
 
-    stages = tuple(stage.strip() for stage in args.stages.split(",") if stage.strip())
+    movers_provider = None
+    if args.source in ("movers", "both"):
+        from .providers.coingecko import CoinGeckoProvider
+
+        movers_provider = CoinGeckoProvider()
+        print(f"discovery: {args.source} (established trending pools included)")
+
+    stages = () if args.source == "movers" else tuple(
+        stage.strip() for stage in args.stages.split(",") if stage.strip()
+    )
     collector = Collector(
         settings,
         recorder,
@@ -267,6 +286,7 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
         quote_provider=quote_provider,
         pair_provider=pair_provider,
         monitor=monitor,
+        movers_provider=movers_provider,
         config=CollectorConfig(
             stages=stages,
             limit_per_stage=args.limit,
