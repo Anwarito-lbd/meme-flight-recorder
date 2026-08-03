@@ -65,6 +65,55 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## Holder concentration is measured properly for the first time
+
+`top10_private_holder_pct` had never been populated. The only available figure
+was `getTokenLargestAccounts`, which is gross: it counts the AMM pool's own
+vault. Two fixes were needed and the first one was not enough.
+
+**Resolving owners** (`largest_holder_owners`) was necessary but insufficient.
+Validated on live candidates, the adjusted figure still equalled the gross one,
+with "biggest holders" at 97%, 99%, 80% -- because the infrastructure exclusion
+list covers Raydium's authority and little else, while every launchpad token's
+supply sits in a pump.fun bonding curve that is on no list. An address list
+cannot solve this; new venues appear continuously.
+
+**The general rule can.** A person's balance is held by a System Program account.
+A vault, a bonding curve or any protocol-controlled balance is a PDA owned by its
+own program. One extra RPC call classifies every owner without knowing the venue:
+
+| token | gross | adjusted | protocol-held |
+|---|---:|---:|---:|
+| OPTM | 100.0% | **14.5%** | 85.5% |
+| pengecoin | 87.2% | **26.0%** | 62.8% |
+| SWEETDREAM | 100.0% | 51.2% (still rejected) | 48.8% |
+| AURELIUS | 100.0% | 99.98% (correctly rejected) | 0% |
+
+The first two were being rejected on a number describing the market rather than
+any holder. AURELIUS shows the rule does not simply wave tokens through: with no
+curve to subtract, a concentrated token stays concentrated. Supply held entirely
+by a protocol returns None and keeps failing closed, because no private
+concentration was measured.
+
+Unknown owner programs count as wallets, so an RPC gap overstates concentration
+and rejects. The opposite default would admit a token one wallet controls.
+
+## Collector pacing was over the provider's limit by 3x, and always had been
+
+The per-candidate delay was a flat 0.6s, justified by a comment claiming a
+60-candidate cycle spread ~120 requests over "about 100 seconds". 60 x 0.6 is 36
+seconds, so the real rate was 200 requests/minute; at the default limit of 50
+across three stages, also 200/min. Every 429 in this project traces to it.
+
+A 429 is worse than slow and that is why it went unnoticed: route and impact come
+back unknown, the fail-closed gates reject, and the candidate is journalled as an
+ordinary rejection indistinguishable from a token that genuinely failed. A rate
+limit was being recorded as evidence about tokens.
+
+The delay is now derived from a target rate (`quote_calls_per_candidate` divided
+by the allowance), giving 2.0s and exactly 60/min at defaults. Two tests guard
+it, one asserting the old 0.6 constant breaches the target.
+
 ## The bot exists now, and cannot yet open a position. Here is exactly why.
 
 `cli collect --paper-trade` opens, manages and closes paper positions
