@@ -37,6 +37,27 @@ def main() -> int:
         default=None,
         help="Seconds between candidates. Paces router calls under its rate limit.",
     )
+    collect.add_argument(
+        "--paper-trade",
+        action="store_true",
+        help=(
+            "Open and manage PAPER positions on candidates that pass the gates "
+            "and the deep-pool filter. Writes journal rows only; it cannot sign "
+            "or broadcast anything."
+        ),
+    )
+    collect.add_argument(
+        "--minimum-pool-usd",
+        type=float,
+        default=50_000.0,
+        help="Pool depth required to open a paper position (default: 50000).",
+    )
+    collect.add_argument(
+        "--max-open",
+        type=int,
+        default=10,
+        help="Maximum concurrent paper positions (default: 10).",
+    )
     sub.add_parser(
         "calibrate",
         help="Did the gates and the confidence score predict anything?",
@@ -213,6 +234,31 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             # authority fields stay unknown and keep failing closed.
             print(f"note: Helius unavailable ({error}); authority evidence stays unknown.")
 
+    monitor = None
+    if getattr(args, "paper_trade", False):
+        from .monitor import MonitorConfig, PositionMonitor
+
+        if pair_provider is None:
+            # Without a pair provider an open position cannot be observed, and
+            # an unobservable position is one the exit engine must close. Opening
+            # positions that are stale from birth would manufacture a track
+            # record of forced exits rather than measure anything.
+            print("error: --paper-trade requires enrichment; drop --no-enrich.")
+            return 2
+        monitor = PositionMonitor(
+            settings,
+            recorder,
+            pair_provider,
+            config=MonitorConfig(
+                minimum_pool_liquidity_usd=args.minimum_pool_usd,
+                maximum_open_positions=args.max_open,
+            ),
+        )
+        print(
+            f"paper trading ON: pool >= ${args.minimum_pool_usd:,.0f}, "
+            f"max {args.max_open} open. No key is loaded and nothing can be signed."
+        )
+
     stages = tuple(stage.strip() for stage in args.stages.split(",") if stage.strip())
     collector = Collector(
         settings,
@@ -220,6 +266,7 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
         mint_provider=mint_provider,
         quote_provider=quote_provider,
         pair_provider=pair_provider,
+        monitor=monitor,
         config=CollectorConfig(
             stages=stages,
             limit_per_stage=args.limit,

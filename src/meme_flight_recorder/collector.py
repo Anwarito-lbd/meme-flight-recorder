@@ -13,7 +13,18 @@ consistently rejected for developer distribution is telling you something
 precise about that source, and that finding is only available if the rejections
 were written down.
 
-The collector cannot open a position. It observes, grades, and records.
+The collector can now open a *paper* position, when a ``monitor`` is supplied.
+Without one it observes, grades and records exactly as before.
+
+That is a change of behaviour and worth being precise about. It still cannot
+sign or broadcast anything: the monitor writes journal rows and nothing else,
+and ``tests/test_no_live_execution.py`` stays green and unmodified. What it adds
+is a forward track record, which the journal has never held -- thousands of
+observations and, until now, zero positions. Every expectancy figure in this
+project is backward-looking because of that gap.
+
+The monitor's exits run *before* discovery, so a failing feed can never prevent
+a held position from being closed.
 """
 
 from __future__ import annotations
@@ -94,9 +105,13 @@ class Collector:
         pair_provider: Any | None = None,
         config: CollectorConfig | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monitor: Any | None = None,
     ) -> None:
         self.settings = settings
         self.recorder = recorder
+        # Optional so every existing caller and test keeps working unchanged.
+        # Absent, the collector observes and records exactly as before.
+        self.monitor = monitor
         self.discovery = discovery or BinanceWeb3Provider()
         self.mint_provider = mint_provider
         self.quote_provider = quote_provider
@@ -117,6 +132,16 @@ class Collector:
         errors: list[str] = []
         status_counts: dict[str, int] = {}
         failure_counts: dict[str, int] = {}
+        eligible: list[dict[str, Any]] = []
+
+        # Held positions are managed *before* discovery, so a failing feed can
+        # never stop a position being exited. A monitor that only ran after a
+        # successful poll would hold through exactly the outages that matter.
+        if self.monitor is not None:
+            try:
+                self.monitor.manage_open()
+            except Exception as error:  # noqa: BLE001 - the book must not end the cycle
+                errors.append(f"monitor: {type(error).__name__}: {error}")
 
         for stage in self.config.stages:
             try:
@@ -134,7 +159,7 @@ class Collector:
                 if index and self.config.enrich and self.config.per_candidate_delay_seconds > 0:
                     sleep(self.config.per_candidate_delay_seconds)
                 try:
-                    status, failures = self._record(row, stage, started)
+                    status, failures, candidate = self._record(row, stage, started)
                 except Exception as error:  # noqa: BLE001
                     errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
                     continue
@@ -142,6 +167,14 @@ class Collector:
                 status_counts[status] = status_counts.get(status, 0) + 1
                 for failure in failures:
                     failure_counts[failure] = failure_counts.get(failure, 0) + 1
+                if status == CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value:
+                    eligible.append(candidate)
+
+        if self.monitor is not None and eligible:
+            try:
+                self.monitor.consider(eligible)
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"monitor_entry: {type(error).__name__}: {error}")
 
         summary = CycleSummary(
             started_at=started,
@@ -189,7 +222,7 @@ class Collector:
 
     def _record(
         self, row: MemeRushRow, stage: str, observed_at: datetime
-    ) -> tuple[str, tuple[str, ...]]:
+    ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
         snapshot = row.to_snapshot(observed_at=observed_at)
         coverage: float | None = None
         pair: Any | None = None
@@ -228,10 +261,7 @@ class Collector:
         # append_once keeps a retried or overlapping poll from writing the same
         # observation twice, while still allowing the same mint to be recorded
         # again on the next cycle. That repetition is the time series.
-        self.recorder.append_once(
-            EVENT_CANDIDATE_OBSERVED,
-            entity_id=row.contract_address,
-            payload={
+        payload = {
                 "stage": stage,
                 "chain_id": row.chain_id,
                 "symbol": row.symbol,
@@ -269,14 +299,21 @@ class Collector:
                 "confidence": confidence.value,
                 "confidence_band": confidence.band.value,
                 "confidence_missing": list(confidence.missing),
-                "evidence_coverage_pct": coverage,
-            },
+            "evidence_coverage_pct": coverage,
+        }
+        self.recorder.append_once(
+            EVENT_CANDIDATE_OBSERVED,
+            entity_id=row.contract_address,
+            payload=payload,
             idempotency_key=(
                 f"{EVENT_CANDIDATE_OBSERVED}:{row.contract_address}:"
                 f"{observed_at.isoformat(timespec='seconds')}"
             ),
         )
-        return decision.status.value, decision.failures
+        # The monitor needs the mint alongside the journalled fields; the
+        # payload itself is keyed by entity_id in the journal and does not
+        # carry it.
+        return decision.status.value, decision.failures, payload | {"mint": row.contract_address}
 
     def _apply_pair_evidence(
         self, snapshot: TokenSnapshot, mint: str

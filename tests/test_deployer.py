@@ -235,3 +235,53 @@ def test_limits_are_configurable() -> None:
     assert assess_deployer(established(prior_launches=6), permissive).verdict is (
         DeployerVerdict.CLEAN
     )
+
+
+def test_all_paths_agree_on_whether_a_developer_is_distributing() -> None:
+    """The regression that matters: three doors, one answer.
+
+    This question had three independent implementations -- the cluster gate, the
+    deployer assessment and the discovery feed's snapshot mapping -- each written
+    as `dev_sell_pct > 0`. Two were fixed and the third kept rejecting live
+    candidates on the old rule for a full session. Anything that answers this
+    question must route through `developer_is_distributing`.
+    """
+    from meme_flight_recorder.clusters import assess_vendor_labels
+    from meme_flight_recorder.config import ClusterLimits
+    from meme_flight_recorder.deployer import developer_is_distributing
+    from meme_flight_recorder.providers.binance_web3 import MemeRushRow, VendorClusterLabels
+
+    cluster_limits = ClusterLimits()
+    cases = {
+        "dust": 1.474382279e-08,
+        "mid_distribution": 20.0,
+        "exhausted": 100.0,
+        "zero": 0.0,
+    }
+    for label, value in cases.items():
+        expected = developer_is_distributing(value)
+
+        row = MemeRushRow(
+            chain_id="CT_501",
+            contract_address="MINT",
+            symbol="X",
+            name="X",
+            created_at=None,
+            migrated_at=None,
+            price_usd=1.0,
+            market_cap_usd=None,
+            liquidity_usd=1.0,
+            volume_usd=None,
+            holders=None,
+            buy_count=None,
+            sell_count=None,
+            progress_pct=None,
+            migrated=True,
+            labels=VendorClusterLabels(dev_sell_pct=value),
+        )
+        assert row.to_snapshot().developer_selling is expected, label
+
+        rejected = "vendor_developer_distribution" in assess_vendor_labels(
+            VendorClusterLabels(dev_sell_pct=value), cluster_limits
+        ).failures
+        assert rejected is expected, label

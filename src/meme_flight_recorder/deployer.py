@@ -137,6 +137,30 @@ class DeployerAssessment:
         return limits.maximum_dev_sell_pct < sold < limits.exhausted_dev_sell_pct
 
 
+def developer_is_distributing(
+    dev_sell_pct: float | None, limits: DeployerLimits | None = None
+) -> bool | None:
+    """Is the developer *currently* selling into buyers, as opposed to done?
+
+    The single source of truth for that question. It previously had three
+    independent implementations -- the cluster gate, the deployer assessment and
+    the discovery feed's snapshot mapping -- all written as ``> 0``, and fixing
+    two of them left the third quietly rejecting on the same defect.
+
+    ``> 0`` is wrong in both directions. It fires on dust (one candidate was
+    rejected on 1.47e-08 percent of supply), and it fires on a developer who has
+    already sold everything -- the state that measured *safest* across 871 mints,
+    at 7% dead against 28% for tokens where the developer still held.
+
+    None means unknown and must never collapse to False: ``exits.py`` treats
+    False as safe and would hold through an unmeasured risk.
+    """
+    limits = limits or DeployerLimits()
+    if dev_sell_pct is None:
+        return None
+    return limits.maximum_dev_sell_pct < dev_sell_pct < limits.exhausted_dev_sell_pct
+
+
 def _as_float(value: Any) -> float | None:
     if value is None or value == "":
         return None

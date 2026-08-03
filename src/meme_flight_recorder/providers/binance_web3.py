@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ..deployer import developer_is_distributing
 from ..models import TokenIdentity, TokenSnapshot, Universe
 from .http import get_json, post_json
 
@@ -150,9 +151,11 @@ class MemeRushRow:
             liquidity_usd=self.liquidity_usd,
             holder_count=self.holders,
             top10_private_holder_pct=self.labels.top10_pct,
-            developer_selling=(
-                None if self.labels.dev_sell_pct is None else self.labels.dev_sell_pct > 0
-            ),
+            # Not `dev_sell_pct > 0`. See developer_is_distributing: a developer
+            # who has fully exited holds no supply left to dump and measured as
+            # the safest state in the recorded data, while dust-level values are
+            # floating-point noise rather than distribution.
+            developer_selling=developer_is_distributing(self.labels.dev_sell_pct),
             bonding_curve_progress_pct=self.progress_pct,
             graduated=self.migrated,
             raw_evidence={"binance_web3": self.raw},
