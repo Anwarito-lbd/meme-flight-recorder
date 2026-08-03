@@ -1,487 +1,302 @@
 # Status — 2026-08-03
 
-Read this first. It is the handoff for anyone (or any session) picking the
+Read this first. It is the handoff for anyone, or any session, picking the
 project up cold.
 
 ## What this is
 
-A Solana meme-coin research system on branch `intelligence-layer`, extending
-`Anwarito-lbd/meme-flight-recorder`. It observes candidates, grades them through
-fail-closed safety gates, simulates entries and exits, and measures whether its
-own judgement was any good.
+A Solana meme-coin research system extending `Anwarito-lbd/meme-flight-recorder`,
+on branch `stage-3-6-8-gates`. It observes candidates, grades them through
+fail-closed safety gates, journals every decision including rejections, opens and
+manages **paper** positions, and measures whether its own judgement was any good.
 
 **Paper only.** Nothing in it can sign or broadcast a transaction, and
 `tests/test_no_live_execution.py` must stay green and unmodified.
 
-## The headline finding
+## Where it stands in one paragraph
 
-The system completes trades now, and the first measured expectancy is
-**negative**. Real candles, costs charged on both legs, $4 positions:
+The measurement apparatus works and is trustworthy. The strategy does not make
+money, and the bot has **never opened a position**. Every gate, filter and
+provider has now been run against real data at least once, and doing that found
+nine defects — four of them in code written the same day and already believed
+working. What exists is an honest instrument that keeps catching its own errors.
+What does not exist is a profitable bot.
 
-Re-measured 2026-08-03 after fixing the timeframe sweep (see below):
+## Do this first
 
-| timeframe | trades | win rate | expectancy | profit factor | tokens with too few candles |
+1. **Check the blocker.** `.venv\Scripts\python.exe scripts\preflight.py`
+   Jupiter's free-tier quota was exhausted on 2026-08-03 and a *single* request
+   still returned 429 after an hour. Without route and impact evidence the
+   fail-closed gates reject everything, so nothing can open. Either it resets, or
+   add a Jupiter API key. Nothing else is worth running until this passes.
+2. **Then run the paper book.**
+   `.venv\Scripts\python.exe -m meme_flight_recorder.cli collect --paper-trade`
+   Default pacing is now correct (60 req/min); do not lower `--delay`.
+3. **Then read the record.**
+   `.venv\Scripts\python.exe scripts\report_track_record.py`
+   It scores the journal against the evidence gate directly.
+
+## The evidence gate — the only definition of "ready"
+
+Live execution unlocks only when **all** hold, computed not judged:
+
+| Requirement | Status 2026-08-03 |
+|---|---|
+| >= 30 complete forward trades | **0** |
+| positive expectancy after costs | no — negative at every timeframe |
+| profit factor > 1.2 | no — best measured 0.794 |
+| no single trade > 1/3 of profit | no — 79-100% |
+| drawdown within limit | not reached |
+
+Failing this is not a reason to look for a more aggressive strategy. It is a
+reason to keep collecting until the answer is unambiguous.
+
+## Constraints that shape every decision
+
+- **Capital is $10-40 real.** Positions are ~10% of equity (~$4). Below $30 the
+  account reports `UNFUNDED`. Do not propose strategies needing private RPC or
+  Jito tips; they are unreachable at this size.
+- **Public information only.** No leaked paid-group calls, hacked accounts or
+  pre-announcement listings. Padre and Fomo sit behind logins, so their calls
+  arrive by manual CSV. X's API costs more per month than the account holds.
+- **Sub-second sniping is not available at this capital**, and the project's own
+  research agrees: launch feeds are for observation and data collection, not
+  immediate execution. The measured winners were not launch snipes — the CATE
+  that reached $65M was eight days old.
+
+## Measured expectancy
+
+Re-measured after correcting the cost model. Costs charged both legs at the
+**measured** 1.14%/leg, not the 3% previously assumed:
+
+| timeframe | trades | win rate | expectancy | profit factor | too few candles |
 |---|---:|---:|---:|---:|---:|
 | 15m | 15 | 0% | -$0.63 | 0.000 | 0 of 12 |
 | 1h | 7 | 0% | -$0.61 | 0.000 | 1 of 12 |
 | 4h | 4 | 25% | -$0.23 | 0.394 | 3 of 12 |
 | 1d | 1 | 0% | -$0.24 | 0.000 | 9 of 12 |
 
-Every timeframe is negative. The apparent improvement with holding period is
-still visible, but the last column explains why it can never be confirmed on this
-population: **trending Solana meme pools are too young to have daily candles.**
-Nine of twelve tokens could not supply 40 daily bars. The earlier `1d` cell of
-`+$0.08` on n=2 was not a promising signal, it was two tokens that happened to be
-old enough. A daily strategy cannot be tested against tokens that are days old,
-and that is a structural limit of the population rather than a sampling accident.
+Every timeframe negative. The apparent improvement with holding period cannot be
+confirmed here: trending Solana pools are too young to have daily candles, and
+nine of twelve could not supply forty daily bars. Sampled from a *trending* feed,
+so these are an upper bound.
 
-These tokens came from a *trending* feed, which by construction contains things
-that already worked, so even these numbers are an upper bound. **Do not trade
-this live.**
+Exit policy was then eliminated as the cause. Four policies on identical entries:
 
-The deployer-gate change below does **not** appear in these numbers: this
-backtest samples CoinGecko trending pools and applies only `RiskEngine`, never
-the cluster gates. Nothing here tests it.
+| policy | n | win | expectancy | factor | top trade |
+|---|---:|---:|---:|---:|---:|
+| hierarchy (production) | 21 | 9.5% | -0.3221 | 0.016 | 79% |
+| take_2x | 20 | 5.0% | **-0.0811** | 0.794 | 100% |
+| scale_runner | 19 | 0% | -0.4149 | 0.000 | 0% |
+| hold_to_end | 19 | 0% | -0.4149 | 0.000 | 0% |
 
-**A defect this sweep exposed.** `backtest_strategy.py` took `--aggregate` and
-always asked the provider's *minute* path, so `--aggregate 60` raised, every
-token was skipped, and the script printed "the entry rule found no qualifying
-setup ... which is a finding". It was not a finding; it was zero data reported as
-a result — the same failure this project caught once before. The script now takes
-`--timeframe {5m,15m,1h,4h,12h,1d}`, maps to the provider's own path, prints a
-reconciling denominator, and exits non-zero rather than drawing a conclusion when
-candles are missing.
-
-## Constraints that shape every decision
-
-- **Capital is $10-40 real.** Positions are 10% of equity (~$4), sized so the
-  measured total-loss rate does not lead to ruin. Below $30 the account reports
-  `UNFUNDED`. Do not propose strategies needing private RPC or Jito tips.
-- **Live execution is gated on evidence**: >=30 complete trades, positive
-  expectancy after costs, profit factor >1.2, no single trade >1/3 of profit,
-  drawdown within limit. The gate is computed, not judged.
-- **Public information only.** No leaked group calls, hacked accounts, or
-  pre-announcement listings. Padre and Fomo are behind logins, so their calls
-  arrive by manual CSV. X's API is pay-per-read and costs more per month than
-  the account holds, so X calls are manual too.
-
-## Current blocker: Jupiter's quota, and the collector was making it permanent
-
-Nothing can open a position while Jupiter returns 429. Without route and impact
-evidence the fail-closed gates reject every candidate, and the rejection is
-journalled indistinguishably from a token that genuinely failed -- a rate limit
-recorded as evidence about tokens.
-
-**The collector was causing its own outage.** Rate-limited, a cycle still issued
-two quote calls per candidate: ~120 requests that all failed and kept the
-allowance pinned, so it never recovered between cycles. Observed as forty-plus
-minutes of continuous 429s across repeated runs.
-
-`JupiterQuoteProvider` now opens a circuit breaker after repeated 429s and skips
-quoting for a cooldown. Candidates in that window are recorded with unknown
-routes exactly as before, but the requests are not spent, which is what allows
-recovery.
-
-As of this writing a *single* request still returns 429 after ~45 minutes, so
-this is an hourly or daily quota rather than a per-minute window. That is an
-external constraint, not a code problem. Options: wait for the quota to reset, or
-add a Jupiter API key for the paid endpoint.
-
-**Deliberately not done:** estimating price impact from constant-product maths
-against DexScreener pool depth. It would make candidates pass, and it would
-substitute an estimate for a quote inside a gate whose purpose is to verify a
-real executable route. The gate would read as verified while being weaker than
-its name. If a fallback is ever added it must be labelled as estimated and must
-not satisfy the same gate.
-
-## The first real wallet measurement: a "top trader" who is not one
-
-Stage 8 had never been run on a real wallet. Doing so required fixing two things
-first -- `backfill_wallet_history.py` never loaded `.env`, and `profile_wallet`
-only understood the Enhanced Transactions payload while the endpoint returns
-`balanceChanges`. The second is the more instructive failure: 326 tests passed
-while the module returned zero trades on 1,200 real transactions, because the
-fixtures encoded the same wrong assumption as the code.
-
-With 1,200-1,400 transactions cached per wallet:
-
-| wallet | txns | trades | tokens | P&L (SOL) | PF | verdict |
-|---|---:|---:|---:|---:|---:|---|
-| popchad.sol | 1,400 | **34** | 86 | **-126.60** | **0.47** | outlier_dependent |
-| naseem | 1,400 | 18 | 46 | -1,201.64 | 0.00 | insufficient_history |
-| Nansen "Trump whale" | 1,300 | 9 | 48 | +529.93 | n/a | insufficient_history |
-| traderpow | 1,200 | 0 | 453 | 0.00 | n/a | insufficient_history |
-| cifwifhatday.sol | 1,400 | 0 | 74 | 0.00 | n/a | insufficient_history |
-
-**popchad.sol is the point of the whole module, with an important caveat added
-after measuring coverage.** It appears on a curated "top trader" list. Over 34
-completed round trips it shows a profit factor of 0.47, down 126 SOL, and the
-classifier refuses to certify it. A leaderboard sorting by realised profit would
-have said the opposite.
-
-**But that verdict covers 12% of its activity, not all of it.** See the coverage
-section below. The honest statement is "unprofitable across the trades this
-method can price", not "unprofitable". An earlier version of this handoff said
-the latter, and it was overclaiming.
-
-Only one of six wallets even reached the 30-trade bar. Five are recorded as
-insufficient rather than assigned a flattering label from a thin record.
-
-### Coverage: this method reads a small fraction of a wallet
-
-Trade reconstruction pairs a token leg against a *SOL* leg, so anything else is
-invisible. Measured across 8,100 real transactions from these six wallets:
-
-| transaction shape | share | readable? |
-|---|---:|---|
-| single token, no SOL leg (airdrop, transfer, burn) | 88.3% | no -- not a trade |
-| token-to-token swap | 4.5% | **no -- a trade this method cannot price** |
-| no balance changes at all | 4.0% | no |
-| SOL-paired swap | **3.2%** | yes |
-
-Per wallet, coverage runs from **0.17% to 12.07%**. Every verdict above is
-therefore a statement about a slice, and `WalletProfile.coverage_pct` now
-reports that slice so it cannot be omitted.
-
-Token-to-token swaps are counted as `unpriceable_swaps` rather than dropped. A
-silently skipped swap is indistinguishable from a wallet that did not trade,
-which is how traderpow reads as inactive at 453 distinct tokens when it is
-actually unreadable.
-
-**A metric bug caught in the act.** The first version of this coverage counter
-reported 84-96%, because it treated every non-token-to-token transaction as
-readable -- including the 88% that are airdrops. It would have presented a method
-that prices 3% of activity as covering 96% of it. Verified against the real
-distribution before being believed, which is the only reason it was caught.
-
-## Holder concentration is measured properly for the first time
-
-`top10_private_holder_pct` had never been populated. The only available figure
-was `getTokenLargestAccounts`, which is gross: it counts the AMM pool's own
-vault. Two fixes were needed and the first one was not enough.
-
-**Resolving owners** (`largest_holder_owners`) was necessary but insufficient.
-Validated on live candidates, the adjusted figure still equalled the gross one,
-with "biggest holders" at 97%, 99%, 80% -- because the infrastructure exclusion
-list covers Raydium's authority and little else, while every launchpad token's
-supply sits in a pump.fun bonding curve that is on no list. An address list
-cannot solve this; new venues appear continuously.
-
-**The general rule can.** A person's balance is held by a System Program account.
-A vault, a bonding curve or any protocol-controlled balance is a PDA owned by its
-own program. One extra RPC call classifies every owner without knowing the venue:
-
-| token | gross | adjusted | protocol-held |
-|---|---:|---:|---:|
-| OPTM | 100.0% | **14.5%** | 85.5% |
-| pengecoin | 87.2% | **26.0%** | 62.8% |
-| SWEETDREAM | 100.0% | 51.2% (still rejected) | 48.8% |
-| AURELIUS | 100.0% | 99.98% (correctly rejected) | 0% |
-
-The first two were being rejected on a number describing the market rather than
-any holder. AURELIUS shows the rule does not simply wave tokens through: with no
-curve to subtract, a concentrated token stays concentrated. Supply held entirely
-by a protocol returns None and keeps failing closed, because no private
-concentration was measured.
-
-Unknown owner programs count as wallets, so an RPC gap overstates concentration
-and rejects. The opposite default would admit a token one wallet controls.
-
-## Collector pacing was over the provider's limit by 3x, and always had been
-
-The per-candidate delay was a flat 0.6s, justified by a comment claiming a
-60-candidate cycle spread ~120 requests over "about 100 seconds". 60 x 0.6 is 36
-seconds, so the real rate was 200 requests/minute; at the default limit of 50
-across three stages, also 200/min. Every 429 in this project traces to it.
-
-A 429 is worse than slow and that is why it went unnoticed: route and impact come
-back unknown, the fail-closed gates reject, and the candidate is journalled as an
-ordinary rejection indistinguishable from a token that genuinely failed. A rate
-limit was being recorded as evidence about tokens.
-
-The delay is now derived from a target rate (`quote_calls_per_candidate` divided
-by the allowance), giving 2.0s and exactly 60/min at defaults. Two tests guard
-it, one asserting the old 0.6 constant breaches the target.
-
-## The bot exists now, and cannot yet open a position. Here is exactly why.
-
-`cli collect --paper-trade` opens, manages and closes paper positions
-(`monitor.py`, `position_store.py`), and `scripts/report_track_record.py` scores
-the result against the evidence gate. It cannot sign or broadcast;
-`tests/test_no_live_execution.py` is unmodified.
-
-Zero positions have opened, for a reason worth stating precisely rather than
-tuning away.
-
-**The gates were designed around the launchpad feed, and the good population
-cannot satisfy them.** The deep-pool filter that survived its own tail test
-needs pools >=$50k, which barely exist on the launchpad feed (median pool $26,
-~3% qualify). Pointing the collector at established movers with
-`--source movers` fixes the population -- and every candidate is then rejected
-for `developer_activity_unknown`, `holder_concentration_unknown` and
-`cluster_evidence_insufficient`, because the trending feed carries no vendor
-cluster labels and the gates fail closed on missing evidence.
-
-So the two feeds have opposite problems:
-
-| feed | population | evidence |
-|---|---|---|
-| launchpad (`meme_rush`) | median pool $26; deep pools ~3% | vendor labels present, gates satisfiable |
-| movers (trending pools) | pools that actually qualify | no vendor labels; gates fail closed |
-
-**The fix is to supply the missing evidence from chain, not to relax the gate.**
-Concretely: holder concentration and the funding graph for movers, from Helius
-`getTokenLargestAccounts` plus `clusters.assess_funding_graph`, which already
-exists and is already tested. `enrichment.py` deliberately stopped writing the
-*gross* top-10 figure into the field meaning concentration *excluding*
-infrastructure, after that bug rejected 25/25 candidates on a number describing
-the AMM pool -- so the replacement has to compute the adjusted figure properly.
-
-That is the single piece of work between this and forward trades accumulating.
-Relaxing the gates would produce trades immediately and would make every number
-that followed worthless.
-
-## Pool depth is the first filter that survived its own test
-
-Measured 2026-08-03 with `scripts/study_structural_entry.py` over 1,694
-journalled mints with resolved outcomes, entering at each mint's *first*
-observation and holding. Costs charged at the measured 2.288% round trip.
-
-| arm | n | median | dead | >=2x | >=5x | EV/$1 | EV without top 3 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| tradeable (>=$5k) — *baseline* | 257 | 0.164 | 43% | 14.8% | 5.4% | +0.836 | +0.072 |
-| **deep (>=$50k)** | 63 | 0.208 | 49% | 23.8% | 9.5% | **+2.968** | **+0.264** |
-| deep + dev exhausted | 4 | — | — | — | — | too few | too few |
-
-**`deep (>=$50k)` is the first filter this project has found that beats the base
-rate and still beats it after its three largest winners are removed** — 3.6x the
-baseline on the tail-adjusted number. Every earlier candidate failed that second
-test: flow was withdrawn on it, and the cluster and deployer gates turned out to
-measure survival rather than return.
-
-Note the shape. Deep pools die *more* (49% vs 43%) and pay far more when they
-run (23.8% reach 2x vs 14.8%). This is a return filter, not a risk filter, which
-is exactly the thing the system was missing — the safety gates were never going
-to supply it.
-
-Three cautions before sizing on this. n=63 on one collection window. The median
-is still 0.208, so this remains a lottery, just a better-paying one. And
-outcomes come only from tokens still quoted today, so it is an upper bound.
-Re-run on a frozen multi-day cohort before it changes any behaviour.
-
-Combining both filters is untestable here: `deep + dev exhausted` has n=4. The
-two filters are too restrictive together on this sample.
-
-**One methodological note.** The first version of this study used an unfiltered
-baseline and produced an EV of +130,273 per dollar, because the unfiltered set is
-dominated by tokens with no liquidity — including one nominal 2,176,870x in a
-$0.00 pool. `study_return_distribution.py` already excluded those; the entry
-study initially did not. The baseline is now the tradeable universe, which is
-what the system would do today without any new rule.
+"Take the double and leave" measured best by a wide margin and is still negative,
+with one trade carrying 100% of its gross profit. **Every policy loses money, so
+the exit rule is not what is wrong.** Note `scale_runner` and `hold_to_end` are
+identical because the half-at-2x fired once; keeping a runner turned that single
+winner into a loss.
 
 ## The binding constraint is bankroll, not signal
 
-Measured 2026-08-03 with `scripts/study_return_distribution.py`, over candidates
-the risk engine would actually have approved (pool >= $5,000, n=155):
+Over candidates the risk engine would have approved (pool >= $5,000, n=155):
 
-| | pool >= $5k (n=155) | pool >= $50k (n=38) |
+| | pool >= $5k | pool >= $50k (n=38) |
 |---|---:|---:|
 | median multiple | 0.255 | 1.231 |
 | mean multiple | 2.48 | 5.13 |
-| reach 2x | 17% | 24% |
-| reach 5x | 5.8% | 10.5% |
 | best token, share of gross profit | 28% | **52%** |
-| top 3 tokens | 68% | 87% |
-| EV per $1, 6%/leg, as measured | +1.27 | +3.76 |
-| EV per $1, dropping top 3 | **+0.01** | +0.15 |
-| EV per $1, dropping top 5 | **-0.15** | -0.16 |
+| EV per $1 as measured | +1.27 | +3.76 |
+| EV dropping top 3 | **+0.01** | +0.15 |
+| EV dropping top 5 | **-0.15** | -0.16 |
 
-Mean far above median means this market is a **lottery, not a trend**. The
-typical approved candidate loses three quarters of its value; the positive
-expectancy comes entirely from a handful of very large winners. Drop three tokens
-out of 155 and the edge is gone. The $50k tier fails this project's own
-outlier rule outright, with one token carrying 52% of gross profit.
+Mean far above median means this is a **lottery, not a trend**. Drop three tokens
+out of 155 and the edge is gone. Capturing a tail of probability `p` needs about
+`3/p` attempts; at `p = 5.8%` that is ~50 shots, and $40 at $4 positions buys 10
+concurrent. **Ruin before the tail arrives is the base case, not the tail risk.**
 
-**This reframes every negative backtest above.** The entry rule was not failing
-because it was badly tuned. It was sampling the median, which is where the losses
-live, over holding periods too short to reach the tail.
+This reframes every negative backtest: the entry rule was not badly tuned, it was
+sampling the median — where the losses are — over holding periods too short to
+reach the tail.
 
-Capturing a tail of probability `p` takes roughly `3/p` attempts to be more
-likely than not to hit one. At `p = 5.8%` that is about 50 shots. At $40 equity
-and $4 positions this account has **10**, and cannot recycle them quickly. Over
-half of 10-trade sequences contain no 5x at all, while the median trade loses
-75%. **Ruin before the tail arrives is the base case, not the tail risk.**
+## The one filter that survived its own test
 
-So the honest options are: more shots (needs capital), an edge that shifts the
-*median* rather than sampling the tail (nothing built does this -- Stage 7 social
-is the only untried candidate), or accept that this is not tradeable at this size
-and run the system as a research instrument. Adding entry filters does not
-address any of them.
+`scripts/study_structural_entry.py`, over 1,694 mints with resolved outcomes,
+entering at first observation and holding:
 
-Caveat: outcomes come only from tokens still quoted today, so these are an upper
-bound, and the whole sample is one 14-hour window. Re-run over a longer, frozen
-cohort before treating the tail probabilities as stable.
+| arm | n | median | dead | >=2x | EV/$1 | **EV without top 3** |
+|---|---:|---:|---:|---:|---:|---:|
+| tradeable >=$5k (baseline) | 257 | 0.164 | 43% | 14.8% | +0.836 | +0.072 |
+| **deep >=$50k** | 63 | 0.208 | 49% | 23.8% | +2.968 | **+0.264** |
+| deep + dev exhausted | 4 | — | — | — | too few | too few |
 
-## The deployer gate is running backwards
+`deep >=$50k` is the **only** candidate all session that beat the base rate and
+still beat it after its three largest winners were deleted. Note the shape: deep
+pools die *more* (49% vs 43%) and pay far more when they run. This is a return
+filter, which is what the safety gates were structurally never going to supply.
 
-Measured 2026-08-03 over 871 journalled mints with resolved outcomes, via
-`scripts/study_deployer_value.py`. Split by how much of supply the developer had
-sold at first observation:
+Not wired into sizing. n=63, one collection window, outcomes only from tokens
+still quoted today.
 
-| dev_sell_pct | n | dead | median multiple | >2x |
-|---|---:|---:|---:|---:|
-| zero | 448 | 28% | 0.65 | 10% |
-| dust (<0.01%) | 92 | 15% | 0.80 | 15% |
-| partial (<50%) | 4 | 25% | 0.46 | 25% |
-| dumped (>=50%) | 327 | **7%** | 0.87 | 4% |
+## Findings that must not be rediscovered
 
-`safety.py` rejects on `developer_selling` at a threshold of exactly zero, so it
-**rejects the 7%-death band and keeps the 28%-death band.** On survival, which is
-the only thing a risk gate is for, it is inverted.
+**The deployer gate was running backwards, and is now a band.** Over 871 mints:
+dev sold >=50% died **7%**; dev sold nothing died **28%**. Held in every
+lifecycle stratum and coverage-matched. Mechanism: a developer who has exited has
+no supply left to dump. The gate rejected the 7% band and kept the 28% band.
+`maximum_dev_sell_pct` is now a band (reject only `1.0 < pct < 50.0`). Caveat
+recorded at the time: this flipped 508 candidates to allowed and newly rejects
+**zero**, because the middle band is empty in this population.
 
-This survives the two controls that would normally explain it away. Holding
-lifecycle stage constant, the effect appears in every stratum (new 1% vs 19%,
-finalizing 11% vs 32%, migrated 18% vs 35%), so it is not a liveness proxy. It
-also holds coverage-matched, comparing only mints where the vendor reported the
-field either way, so it is not an artifact of the vendor being silent about dead
-tokens.
+**The same question had three implementations.** All written `dev_sell_pct > 0`.
+Fixing two left the third — in the discovery feed's snapshot mapping — rejecting
+live candidates on floating-point dust (one at 1.47e-08). All now route through
+`deployer.developer_is_distributing`, with a test asserting they agree.
 
-**Mechanism:** a developer who has already exited holds no supply left to sell.
-The overhang is spent. A token whose developer has *not* sold still has that
-supply pointed at it, and no stop survives the moment it arrives. This is the
-`post-purge recovery` setup arriving from the data rather than from a playbook.
-
-Two cautions before acting. The surviving band also runs least (4% reach 2x
-versus 10%), so this buys lower variance, not higher return. And a fifth of
-rejections were dust — one candidate was rejected on `dev_sell_pct` of
-1.47e-08 — which is a separate defect: a threshold of exactly zero fires on
-floating-point noise.
-
-**Changed 2026-08-03.** `maximum_dev_sell_pct` moved from `0.0` to a band:
-reject only when `1.0 < dev_sell_pct < 50.0`, meaning a developer still holding
-supply *and* selling into buyers. Dust no longer rejects, and a fully exited
-developer no longer rejects. The same band is applied in `deployer.py` so the
-defect cannot return through the other door.
-
-**Read this before trusting the new gate.** Replayed against the journal, the
-change flips 508 candidates from rejected to allowed and newly rejects **zero**.
-The middle band is empty in this population — only 4 observed values fell between
-0.01% and 50%. So this did not replace one gate with another; it removed a gate
-that was firing 508 times and installed one that currently fires never. On this
-dimension the safety net is effectively absent for this population, justified by
-mechanism and by the death-rate measurement rather than by the new rule having
-demonstrated anything itself. Revisit once the collector has journalled real
-examples of mid-distribution.
-
-## Findings that overturned an assumption
-
-Each of these cost real effort to learn and should not be rediscovered.
-
-**Manipulated tokens pump.** Across 402 measured outcomes, cluster-*clear*
-candidates died more often than cluster-*disqualified* ones (21% vs 9%) and hit
-2x less often (5% vs 16%). The biggest single winner was rejected for
-`developer_selling`. The cluster gate measures **risk** and must not be judged
-on return; do not loosen it because "the data says they pump".
+**Manipulated tokens pump.** Across 402 outcomes, cluster-*clear* candidates died
+more often than cluster-*disqualified* (21% vs 9%) and hit 2x less (5% vs 16%).
+The cluster gate measures **risk**; do not judge it on return. But see the
+deployer finding: "risk gates are judged on risk" means judged on *death rate*,
+and the developer-selling gate failed that on its own terms. Distinguish the two
+cases rather than quoting the first as a blanket defence.
 
 **Stops do not work here.** A replayed collapse fell from $0.0522 to $0.0000303
-inside one five-minute candle, ~1700x below its stop, filling at -99.9%. No exit
-rule survives a gap. Only position sizing protects the account.
+inside one five-minute candle, ~1700x below its stop. Only position sizing
+protects the account.
 
-**Ticker collision is routine.** Five distinct CATE mints and four SAOF mints
-appeared in one night. Every join is on mint address, never symbol. The CATE
-that reached $65M was a *different* token from the one the system flagged, and
-was eight days old — never a launchpad candidate at all.
+**Ticker collision is routine.** Five CATE mints and four SAOF mints in one
+night. Every join is on mint address, never symbol.
 
-**Age does not predict return.** Tested across 350 mints: older pools die less
-(18% to 3%) but stop moving entirely (>2x rate 9% to 0%). The population where
-it might matter was absent from the sample, so no predictive claim is attached
-to the age threshold. It stands as a budget and gap-risk filter only.
+**Age does not predict return.** Tested across 350 mints; claim withdrawn.
 
-## Defects fixed, with how they were found
+**Costs were overstated 2.6x.** Real round-trip at $4 is **2.29%**, not 6%, and
+impact was being charged twice. The `$3.00` minimum viable position was a choice;
+the derived floor at a 10% cost ceiling is **$0.37**, so sub-dollar positions are
+viable and the small Kelly fraction a lottery needs is reachable.
 
-- `journal.py` leaked a connection per call: `with sqlite3.connect(...)` manages
-  the transaction, not the handle.
-- `.env` was never read, so a correctly filled key silently did nothing.
-- Enrichment wrote a *gross* top-10 figure (which counts the AMM pool) into a
-  field meaning concentration *excluding* infrastructure, rejecting 25/25
-  candidates on a number describing the pool.
-- The inherited breakout detector required a 16-candle range under 2.5 ATR,
-  admitting 1.3% of 4,717 measured windows. Now 3.75, from the random-walk
-  baseline (ATR*sqrt(16) ~ 4.0) and the tightest observed quartile.
-- Profit-trail exits fired above *entry* rather than above cost-adjusted
-  breakeven, producing four "profit" exits that lost money.
-- The thesis exit fired at any price below the breakout level while entry
-  accepted a retest within 0.25 ATR of it, so positions were opened at the level
-  and closed by the first tick of noise. The two now share one tolerance.
+**Collector pacing exceeded the provider's limit by 3x and always had.** The flat
+0.6s delay was justified by arithmetic that did not hold (60 x 0.6 = 36s, not the
+"~100s" claimed), giving 200 req/min. Every 429 traces to it. Now derived from a
+target rate; 2.0s and exactly 60/min at defaults.
+
+**A 429 is invisible damage.** Route and impact read unknown, gates fail closed,
+and the candidate is journalled indistinguishably from one that genuinely failed
+— a rate limit recorded as evidence about tokens. `JupiterQuoteProvider` now
+opens a circuit breaker after repeated 429s so the collector stops re-pinning its
+own quota.
+
+**Check that "no result" is not "no data".** Caught three times: a timeframe
+sweep reporting missing candles as "no qualifying setup"; a flow study showing
+zero suspicious tokens when the wash inputs were never journalled; and an entry
+study reporting EV of +130,273/dollar off a $0.00-liquidity token.
+
+**Fixtures can encode the same bug as the code.** 326 tests passed while
+`profile_wallet` returned zero trades on 1,200 real transactions, because it
+parsed the Enhanced Transactions shape while the endpoint returns
+`balanceChanges`. Run every component on real data before calling it working.
+
+## The wallet layer, and how little it can see
+
+Six real wallets cached under `data/wallet-history/`, 1,200-1,400 transactions
+each. One cleared the 30-trade bar:
+
+**popchad.sol**, on a curated "top trader" list, shows profit factor **0.47**,
+down 126 SOL, classified `outlier_dependent`. A leaderboard would have said the
+opposite. **But that verdict covers 12% of its activity** — see below. The honest
+claim is "unprofitable across the trades this method can price".
+
+Coverage, measured over 8,100 real transactions:
+
+| transaction shape | share | readable? |
+|---|---:|---|
+| single token, no SOL leg (airdrop, transfer, burn) | 88.3% | no — not a trade |
+| token-to-token swap | 4.5% | **no — a trade that cannot be priced** |
+| no balance changes | 4.0% | no |
+| SOL-paired swap | **3.2%** | yes |
+
+Per wallet coverage runs **0.17% to 12.07%**. `WalletProfile.coverage_pct`
+reports it so it cannot be omitted. Token-to-token swaps count as
+`unpriceable_swaps` rather than being dropped, because a silently skipped swap is
+indistinguishable from a wallet that did not trade.
+
+## Why the bot cannot open a position yet
+
+Two feeds with opposite problems:
+
+| feed | population | evidence |
+|---|---|---|
+| launchpad (`meme_rush`) | median pool $26; only ~3% clear $50k | vendor labels present, gates satisfiable |
+| movers (trending pools, `--source movers`) | pools that actually qualify | no vendor labels; `developer_activity_unknown`, `cluster_evidence_insufficient` |
+
+Holder concentration is now solved for both: `adjusted_top_holder_pct` resolves
+token-account *owners* and excludes protocol-controlled balances by checking
+whether the owner is a System Program account. An address list could not do this
+— every launchpad token's supply sits in a bonding curve on no list. Measured:
+OPTM gross 100% → adjusted **14.5%**; AURELIUS 100% → **99.98%** with no curve to
+subtract, correctly still rejected.
+
+**The fix for the rest is to supply evidence from chain, not to relax the gate.**
+Relaxing would produce trades immediately and make every subsequent number
+worthless.
+
+**Deliberately not built:** estimating price impact from constant-product maths
+against pool depth. It would make candidates pass, and would substitute an
+estimate for a quote inside a gate whose purpose is verifying a real executable
+route.
+
+## Open work, in the order I would do it
+
+1. **Unblock Jupiter** — wait for the quota or add an API key. Nothing else
+   matters until route evidence exists.
+2. **Resolve deployer + cluster evidence for the movers feed** so the good
+   population can pass the gates. Holder concentration is done; these two remain.
+3. **Accumulate 30 forward paper trades** and re-run `report_track_record.py`.
+4. **Re-run `study_structural_entry.py` on a frozen multi-day cohort** before
+   letting `deep >=$50k` change any behaviour.
+5. Deferred: `study_position_sizing.py` and `study_entry_latency.py` (specced in
+   `docs/superpowers/specs/2026-08-03-shot-count-and-latency-design.md`, not
+   built); GoPlus for live sell simulation — free, covers Solana, and the
+   sellability gate is currently static analysis only.
+6. `cli score-sources` has never run: it needs a CSV of real calls from the user.
+   Cheapest untried input in the system.
 
 ## Running it
 
 ```powershell
 cd "C:\Users\issao\OneDrive\Desktop\meme"
-.venv\Scripts\python.exe scripts\preflight.py                      # check first
-.venv\Scripts\python.exe -m meme_flight_recorder.cli collect --interval 300 --limit 20
+.venv\Scripts\python.exe scripts\preflight.py
+.venv\Scripts\python.exe -m meme_flight_recorder.cli collect --paper-trade
 ```
 
-`run_collector.bat` does the same with logging and auto-restart. The collector
-suppresses system sleep while running — the first unattended night produced 9
-cycles instead of 96 because the host slept.
+`run_collector.bat` adds logging and auto-restart. The collector suppresses
+system sleep; the first unattended night produced 9 cycles instead of 96 because
+the host slept.
 
 | command | what it answers |
 |---|---|
-| `cli calibrate` | Did the gates and confidence score predict anything? |
-| `cli score-sources <csv>` | Which callers are worth following, after costs? |
+| `scripts/report_track_record.py` | Where is the forward record against the gate? |
+| `scripts/study_structural_entry.py` | Does a structural filter beat the base rate? |
+| `scripts/study_return_distribution.py` | What is the shape of returns, and is it a tail? |
+| `scripts/compare_exit_policies.py` | Which exit policy survives? |
 | `scripts/backtest_strategy.py` | What is the strategy's expectancy? |
-| `scripts/replay_collapse.py` | What happens on the worst real case? |
-| `scripts/study_age_survival.py` | Does a proposed pattern actually repeat? |
+| `scripts/study_deployer_value.py` | Does the deployer verdict predict death? |
 | `scripts/study_flow_value.py` | Does organic flow predict return? (unproven) |
-| `scripts/study_deployer_value.py` | Does the deployer verdict predict death? (inverted) |
-| `scripts/study_cohort_value.py` | Do qualified wallets predict return? (no data yet) |
-| `scripts/survey_live_candidates.py` | Why is everything being rejected? |
-
-## Stages 3, 6 and 8: built, measured, mostly not wired in
-
-The operating manual requires nine analysis stages. Before this work only Stage 9
-(chart structure) existed — the one the manual says to run last and never let
-override the others, and the one measured at negative expectancy.
-
-- **Stage 6, organic flow** (`flow.py`). Verdict from holder growth, liquidity
-  persistence and wash-trading tells. `unique_buyer_acceleration` is permanently
-  `None`: the free pool APIs publish transaction *counts*, and one wallet makes a
-  hundred of them. The manual's primary metric is unaffordable, and the module
-  says so rather than substituting a proxy under a stronger name.
-  **Measured: unproven.** ORGANIC n=8 (75% dead) versus INSUFFICIENT n=82 (11%
-  dead) — direction is adverse but the sample is far too small. **Not wired into
-  entry.** Wash flags were untestable on historical rows because volume was never
-  journalled before now; the collector records it from this commit forward.
-- **Stage 3, deployer** (`deployer.py`, `deployer_history.py`). Verdict
-  CLEAN/UNRESOLVED/ADVERSE, with content-addressed history caching. A fresh
-  wallet is UNRESOLVED and never CLEAN; truncated history cannot clear a wallet.
-  **Measured: the existing gate is inverted** — see above.
-- **Stage 8, wallet cohorts** (`wallets.py`). FIFO trade reconstruction and
-  classification. Under 30 observable trades cannot be a repeatable trader at any
-  level of performance; a best trade over a third of gross profit is outlier
-  dependent; a flawless record is UNCLASSIFIED rather than excellent, because
-  invisible losses are not absent losses. **No data yet** — needs wallet history
-  backfilled.
-
-Two of three studies returned "unproven" and the third says an existing gate runs
-backwards. That is the system working: each gate had its decision rule written
-down before the numbers were seen, and none was wired in on a plausible story.
-
-## Open work, in the order I would do it
-
-1. **Test the daily-timeframe gradient on a non-survivorship sample.** The only
-   positive expectancy cell has n=2 and the token sample is biased upward.
-2. **Wire the collector to open and monitor paper positions**, so forward trades
-   accumulate alongside the backtest.
-3. Source scoring needs the user's CSV of real calls; the collector supplies the
-   other half automatically.
-4. Deferred: latency harness, wallet cohort tracking, the TJR/Unipcs/Murad
-   playbook studies, session reporting.
+| `scripts/study_cohort_value.py` | Do qualified wallets predict return? (no data) |
+| `scripts/backfill_wallet_history.py` | Fetch wallet history (needs `--max-pages`) |
+| `scripts/replay_collapse.py` | What happens on the worst real case? |
+| `cli calibrate` | Did the gates and confidence score predict anything? |
 
 ## Working standard
 
-Do not generalise from a single case. Encode a rule only when the pattern
-repeats across measured data or a structural mechanism explains it. Two claims
-were withdrawn this way already; the recorded rejections are what made that
-possible, and keeping them is the closest thing this project has to an edge.
+Do not generalise from a single case. Encode a rule only when the pattern repeats
+across measured data or a structural mechanism explains it. Several claims were
+withdrawn this way; the recorded rejections are what made that possible and are
+the closest thing this project has to an edge.
+
+Every gate ships with the study that decides whether it may be trusted, and the
+decision rule is written **before** the numbers are seen. Two of three Stage
+3/6/8 studies returned "unproven" and stayed out of the entry path. That is the
+system working, not stalling.
+
+Run every component against real data before reporting it as working. Nine
+defects were found this way in one day, four in code written that same day and
+already believed correct.
