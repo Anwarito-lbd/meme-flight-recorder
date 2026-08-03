@@ -65,6 +65,42 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## The first real wallet measurement: a "top trader" who is not one
+
+Stage 8 had never been run on a real wallet. Doing so required fixing two things
+first -- `backfill_wallet_history.py` never loaded `.env`, and `profile_wallet`
+only understood the Enhanced Transactions payload while the endpoint returns
+`balanceChanges`. The second is the more instructive failure: 326 tests passed
+while the module returned zero trades on 1,200 real transactions, because the
+fixtures encoded the same wrong assumption as the code.
+
+With 1,200-1,400 transactions cached per wallet:
+
+| wallet | txns | trades | tokens | P&L (SOL) | PF | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| popchad.sol | 1,400 | **34** | 86 | **-126.60** | **0.47** | outlier_dependent |
+| naseem | 1,400 | 18 | 46 | -1,201.64 | 0.00 | insufficient_history |
+| Nansen "Trump whale" | 1,300 | 9 | 48 | +529.93 | n/a | insufficient_history |
+| traderpow | 1,200 | 0 | 453 | 0.00 | n/a | insufficient_history |
+| cifwifhatday.sol | 1,400 | 0 | 74 | 0.00 | n/a | insufficient_history |
+
+**popchad.sol is the point of the whole module.** It appears on a curated
+"top trader" list. Measured over 34 completed round trips it has a profit factor
+of 0.47 and is down 126 SOL. A leaderboard sorting by realised profit, or a
+follower count, would have said the opposite. Nothing here is a reason to copy
+that wallet, and the classifier refuses to certify it.
+
+Only one of six wallets even reached the 30-trade bar. Five are recorded as
+insufficient rather than assigned a flattering label from a thin record.
+
+**A limitation this exposed, stated rather than hidden.** Trade reconstruction
+pairs a token leg against a *SOL* leg. Token-to-token swaps routed through USDC
+or another quote asset are not counted, which is the likely explanation for
+traderpow showing 453 distinct tokens and zero completed round trips -- along
+with airdrop spam, which arrives without a purchase. Those wallets are not
+"inactive"; they are partly unreadable by this method, and their zero should not
+be read as a measurement.
+
 ## Holder concentration is measured properly for the first time
 
 `top10_private_holder_pct` had never been populated. The only available figure
