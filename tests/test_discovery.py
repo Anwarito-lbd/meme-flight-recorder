@@ -115,15 +115,16 @@ class MoverFilterTests(unittest.TestCase):
         movers, _ = select_movers(_payload(quiet, _pool()))
         self.assertEqual(movers[0].symbol, "CATE")
 
-    def test_it_discriminates_the_real_matched_pair(self):
-        """Two tokens, one ticker, opposite outcomes. The filter must split them.
+    def test_it_separates_the_real_matched_pair(self):
+        """Two tokens, one ticker, opposite outcomes. The filter splits them.
 
-        Both CATEs appeared in this project's own data. The one that went to
-        -100% was seven minutes old with $519k of liquidity; the one that went
-        to +259% was eight days old. Depth did not separate them -- the dead one
-        had ample depth. Survived time did, because a pool that has traded for
-        days has demonstrated it is not a bundled launch waiting to gap, and gap
-        risk is the one risk a stop cannot manage.
+        This pins observed behaviour; it is deliberately not evidence that age
+        predicts survival. A study over 350 journalled mints found older pools
+        die less (18% to 3%) but also stop moving entirely (>2x rate 9% to 0%,
+        median exactly 1.00), and the bucket this pair's winner belongs to --
+        pools older than a day -- was empty in that sample. The available data
+        cannot test the hypothesis, so the age threshold stands as a budget and
+        gap-risk filter only, and no predictive claim is attached to it.
         """
         dead = _pool(
             mint="9SNEJJGhpVVSmj8vJp2pxdn5prUtoJ7iZetbisNZpump",
