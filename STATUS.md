@@ -65,6 +65,49 @@ candles are missing.
   arrive by manual CSV. X's API is pay-per-read and costs more per month than
   the account holds, so X calls are manual too.
 
+## The binding constraint is bankroll, not signal
+
+Measured 2026-08-03 with `scripts/study_return_distribution.py`, over candidates
+the risk engine would actually have approved (pool >= $5,000, n=155):
+
+| | pool >= $5k (n=155) | pool >= $50k (n=38) |
+|---|---:|---:|
+| median multiple | 0.255 | 1.231 |
+| mean multiple | 2.48 | 5.13 |
+| reach 2x | 17% | 24% |
+| reach 5x | 5.8% | 10.5% |
+| best token, share of gross profit | 28% | **52%** |
+| top 3 tokens | 68% | 87% |
+| EV per $1, 6%/leg, as measured | +1.27 | +3.76 |
+| EV per $1, dropping top 3 | **+0.01** | +0.15 |
+| EV per $1, dropping top 5 | **-0.15** | -0.16 |
+
+Mean far above median means this market is a **lottery, not a trend**. The
+typical approved candidate loses three quarters of its value; the positive
+expectancy comes entirely from a handful of very large winners. Drop three tokens
+out of 155 and the edge is gone. The $50k tier fails this project's own
+outlier rule outright, with one token carrying 52% of gross profit.
+
+**This reframes every negative backtest above.** The entry rule was not failing
+because it was badly tuned. It was sampling the median, which is where the losses
+live, over holding periods too short to reach the tail.
+
+Capturing a tail of probability `p` takes roughly `3/p` attempts to be more
+likely than not to hit one. At `p = 5.8%` that is about 50 shots. At $40 equity
+and $4 positions this account has **10**, and cannot recycle them quickly. Over
+half of 10-trade sequences contain no 5x at all, while the median trade loses
+75%. **Ruin before the tail arrives is the base case, not the tail risk.**
+
+So the honest options are: more shots (needs capital), an edge that shifts the
+*median* rather than sampling the tail (nothing built does this -- Stage 7 social
+is the only untried candidate), or accept that this is not tradeable at this size
+and run the system as a research instrument. Adding entry filters does not
+address any of them.
+
+Caveat: outcomes come only from tokens still quoted today, so these are an upper
+bound, and the whole sample is one 14-hour window. Re-run over a longer, frozen
+cohort before treating the tail probabilities as stable.
+
 ## The deployer gate is running backwards
 
 Measured 2026-08-03 over 871 journalled mints with resolved outcomes, via
