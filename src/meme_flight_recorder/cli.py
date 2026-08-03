@@ -26,6 +26,14 @@ def main() -> int:
     )
     collect.add_argument("--stages", default="new,finalizing,migrated")
     collect.add_argument("--no-enrich", action="store_true")
+    score = sub.add_parser(
+        "score-sources", help="Rank sources by post-call expectancy after costs."
+    )
+    score.add_argument("calls_csv", help="Manual export: source,author,mint,called_at[,text,url]")
+    score.add_argument("--events", type=int, default=1000)
+    score.add_argument("--min-sample", type=int, default=10)
+    score.add_argument("--horizon", default="1h", choices=["30s", "5m", "1h", "1d"])
+    score.add_argument("--cost-pct", type=float, default=6.0)
     args = parser.parse_args()
 
     settings = load_settings(args.config)
@@ -40,9 +48,59 @@ def main() -> int:
         }
     elif args.command == "collect":
         return _collect(settings, recorder, args)
+    elif args.command == "score-sources":
+        return _score_sources(recorder, args)
     else:
         result = recorder.list_events(args.limit)
     print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+def _score_sources(recorder: FlightRecorder, args) -> int:
+    """Rank sources worst first, so the ones to drop are at the top."""
+    from .sources import load_calls_csv, score_all
+
+    calls = load_calls_csv(args.calls_csv)
+    if not calls:
+        print("No usable calls found. Rows need author, called_at, and a mint address.")
+        return 1
+
+    events = [
+        event
+        for event in recorder.list_events(args.events)
+        if event["event_type"] == "candidate_observed"
+    ]
+    if not events:
+        print("No observations journalled yet. Run 'collect' first and let it gather data.")
+        return 1
+
+    scores = score_all(
+        calls,
+        events,
+        minimum_sample=args.min_sample,
+        horizon=args.horizon,
+        round_trip_cost_pct=args.cost_pct,
+    )
+
+    print(
+        f"{len(calls)} calls against {len(events)} observations, "
+        f"net of {args.cost_pct}% round-trip cost, at {args.horizon}\n"
+    )
+    header = f"{'source':<28} {'calls':>6} {'meas':>6} {'net%':>9} {'win%':>7}  role"
+    print(header)
+    print("-" * len(header))
+    for score in scores:
+        net = score.mean_net_pct.get(args.horizon)
+        win = score.win_rate_pct.get(args.horizon)
+        net_text = "--" if net is None else f"{net:.2f}"
+        win_text = "--" if win is None else f"{win:.1f}"
+        print(
+            f"{score.identity:<28} {score.calls:>6} {score.measurable:>6} "
+            f"{net_text:>9} {win_text:>7}  {score.role.value}"
+        )
+        for note in score.notes:
+            print(f"{'':<28} note: {note}")
+    print("\nWorst first. UNPROVEN means too few measurable calls to judge, not neutral.")
     return 0
 
 
