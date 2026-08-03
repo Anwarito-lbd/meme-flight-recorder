@@ -120,6 +120,7 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             # authority fields stay unknown and keep failing closed.
             print(f"note: Helius unavailable ({error}); authority evidence stays unknown.")
 
+    stages = tuple(stage.strip() for stage in args.stages.split(",") if stage.strip())
     collector = Collector(
         settings,
         recorder,
@@ -127,11 +128,27 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
         quote_provider=quote_provider,
         pair_provider=pair_provider,
         config=CollectorConfig(
-            stages=tuple(stage.strip() for stage in args.stages.split(",") if stage.strip()),
+            stages=stages,
             limit_per_stage=args.limit,
             interval_seconds=args.interval,
             enrich=not args.no_enrich,
         ),
+    )
+
+    # A cycle grades every candidate through six network calls each and takes
+    # well over a minute, during which the process would otherwise print
+    # nothing at all. For a tool meant to be left running unattended, silence
+    # at startup is indistinguishable from a hang.
+    expected = len(stages) * args.limit
+    print(
+        f"Collector started: {expected} candidates per cycle "
+        f"({', '.join(stages)}), every {args.interval}s.\n"
+        f"Journal: {settings.database_path}\n"
+        f"Enrichment: {'on' if not args.no_enrich else 'off'}. "
+        f"Paper only; this process cannot sign or broadcast.\n"
+        f"First cycle takes roughly {max(1, round(expected * 1.7 / 60))} min. "
+        f"Ctrl+C to stop.\n",
+        flush=True,
     )
 
     def report(summary) -> None:
