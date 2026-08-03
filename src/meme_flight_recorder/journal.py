@@ -141,6 +141,22 @@ class FlightRecorder:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
 
+    def events_by_type(self, event_type: str, limit: int = 200_000) -> list[dict[str, Any]]:
+        """Return every event of one type, oldest first, for offline analysis.
+
+        ``list_events`` caps at 1000 because it backs an API surface where an
+        unbounded read is a denial-of-service risk. Analysis has the opposite
+        requirement: a single overnight collector run journals thousands of
+        observations, and silently scoring a source against the most recent
+        fifth of them would produce a confident, wrong answer.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM events WHERE event_type = ? ORDER BY id LIMIT ?",
+                (event_type, max(1, limit)),
+            ).fetchall()
+        return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
+
     def last_event(self, entity_id: str, event_type: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(

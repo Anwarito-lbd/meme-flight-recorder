@@ -30,7 +30,7 @@ def main() -> int:
         "score-sources", help="Rank sources by post-call expectancy after costs."
     )
     score.add_argument("calls_csv", help="Manual export: source,author,mint,called_at[,text,url]")
-    score.add_argument("--events", type=int, default=1000)
+    score.add_argument("--events", type=int, default=200_000)
     score.add_argument("--min-sample", type=int, default=10)
     score.add_argument("--horizon", default="1h", choices=["30s", "5m", "1h", "1d"])
     score.add_argument("--cost-pct", type=float, default=6.0)
@@ -65,11 +65,7 @@ def _score_sources(recorder: FlightRecorder, args) -> int:
         print("No usable calls found. Rows need author, called_at, and a mint address.")
         return 1
 
-    events = [
-        event
-        for event in recorder.list_events(args.events)
-        if event["event_type"] == "candidate_observed"
-    ]
+    events = recorder.events_by_type("candidate_observed", args.events)
     if not events:
         print("No observations journalled yet. Run 'collect' first and let it gather data.")
         return 1

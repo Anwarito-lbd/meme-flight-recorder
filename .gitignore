@@ -9,3 +9,6 @@ data/
 integrations/freqtrade/data/
 integrations/freqtrade/*.sqlite*
 artifacts/
+
+# collector logs
+logs/
