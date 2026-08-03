@@ -90,6 +90,43 @@ class RiskLimits:
 
 
 @dataclass(frozen=True)
+class ExitLimits:
+    """When to leave a position, in priority order.
+
+    Entry is a decision made once with full attention. Exit is a decision that
+    must survive being made badly, at the wrong hour, on incomplete data. So
+    every threshold here is absolute and pre-committed rather than judged in the
+    moment.
+    """
+
+    # Security: the pool is being dismantled underneath the position.
+    liquidity_drop_pct: float = 15.0
+    liquidity_drop_window_minutes: int = 10
+
+    # Liquidity: the exit itself has become expensive.
+    minimum_pool_liquidity_usd: float = 5_000.0
+    maximum_exit_impact_pct: float = 3.0
+
+    # Flow: demand has turned over.
+    minimum_buy_share_pct: float = 40.0
+
+    # Time: the move that justified entry never arrived.
+    maximum_hold_minutes: int = 1_440
+    no_progress_minutes: int = 240
+    no_progress_threshold_pct: float = 2.0
+
+    # Profit: scale out against the risk taken, not against hope.
+    first_scale_r: float = 1.0
+    first_scale_fraction: float = 0.34
+    second_scale_r: float = 2.0
+    second_scale_fraction: float = 0.33
+    trail_atr_multiple: float = 1.5
+
+    # Stale: the position can no longer be observed at all.
+    stale_after_failed_checks: int = 3
+
+
+@dataclass(frozen=True)
 class Settings:
     execution_mode: str
     database_path: Path
