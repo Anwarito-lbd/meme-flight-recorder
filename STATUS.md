@@ -62,8 +62,28 @@ Two distinct problems, and they need different fixes:
 
 **Do not relax that threshold on this evidence alone.** The disciplined next step
 is the same one that fixed the deployer gate: measure death rate by concentration
-band and find out where the risk actually sits. If death rate is flat across
-bands, the gate is filtering population, not danger.
+band and find out where the risk actually sits.
+
+`scripts/study_concentration_value.py` now does exactly that, and reports
+**UNPROVEN at n=6** — the concentration *value* was never journalled, only the
+failure reason, so the study cannot be backfilled and its sample starts from
+2026-08-10 forward. That gap is itself the same defect class as the discarded
+flow inputs: the journal recorded the verdict and threw away the evidence for it.
+
+What the distribution already shows, over the 45 values recorded so far:
+
+| percentile | top-10 concentration |
+|---|---:|
+| p25 | 3.2% |
+| **p50** | **45.2%** |
+| p75 | 94.8% |
+
+It is **bimodal**, and the 30% threshold sits almost exactly at the median,
+splitting the population roughly in half (49% at or below, 51% above). So the
+gate is discriminating rather than rejecting everything — an earlier reading of
+"every candidate is above 30%" came from a 6-outcome sample and does not survive
+the larger one. Whether 30% is in the *right* place still needs outcomes, and
+that needs the collector to run.
 
 ## Do this first
 
