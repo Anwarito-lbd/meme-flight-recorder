@@ -390,6 +390,13 @@ class Collector:
                 "age_minutes": snapshot.age_minutes,
                 "entry_price_impact_pct": snapshot.entry_price_impact_pct,
                 "exit_price_impact_pct": snapshot.exit_price_impact_pct,
+                # The concentration gate rejected 36 of 56 winners, and the
+                # journal recorded only *that* it fired -- never the number it
+                # fired on. That makes the obvious follow-up impossible: death
+                # rate cannot be banded by concentration if the concentration
+                # was discarded. Same defect class as the flow inputs, which
+                # were computed for the confidence score and then thrown away.
+                "top10_private_holder_pct": snapshot.top10_private_holder_pct,
                 # Flow inputs. These were previously computed for the confidence
                 # score and then discarded, which left the journal holding a
                 # conclusion whose evidence no longer existed. Transaction counts
