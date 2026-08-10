@@ -22,6 +22,49 @@ nine defects — four of them in code written the same day and already believed
 working. What exists is an honest instrument that keeps catching its own errors.
 What does not exist is a profitable bot.
 
+## Recall is zero. This is the most important finding in the project.
+
+`scripts/study_winner_recall.py` asks the question every other study inverts:
+**given a winner, what verdict did we give it?** Restricted to candidates with a
+tradeable pool (>=$5,000), over 492 measurable outcomes:
+
+| outcome band | n | eligible | monitor | reject |
+|---|---:|---:|---:|---:|
+| big winner (>=5x) | 34 | 0 (0%) | 0 (0%) | **34 (100%)** |
+| winner (>=2x) | 22 | 0 (0%) | 0 (0%) | 22 (100%) |
+| middling | 113 | 0 (0%) | 3 (3%) | 110 (97%) |
+| dead (<10%) | 323 | 0 (0%) | 7 (2%) | 316 (98%) |
+
+**The system has never accepted a single winner, and it accepts deaths at a
+higher rate (2%) than winners (0%).** Recall against the observed universe is
+exactly zero. This does not make the gates wrong — they were built to measure
+risk — but "catch the early winners" cannot happen through them as configured.
+
+Why the 56 winners (>=2x, real liquidity) were rejected:
+
+| cause | n | nature |
+|---|---:|---|
+| `holder_concentration_excessive` | 36 | **a real gate, and the dominant killer** |
+| `exit/entry_price_impact_excessive` | 15 / 14 | real, but check the threshold at $4 size |
+| rejected *only* on `*_unknown` | 13 | **missing data, not a decision** |
+| vendor sniper / fresh-wallet / dev | 6 / 5 / 3 | real |
+
+Two distinct problems, and they need different fixes:
+
+1. **13 of 56 winners were rejected purely because data was missing** — route and
+   impact unknown, i.e. the Jupiter quota. Those are provider outages recorded as
+   risk decisions. Fixing the quota alone recovers a quarter of the winners.
+2. **Holder concentration rejects 36 of 56.** The vendor supplies `top10_pct`
+   for **0 of 18,717** mints, so this figure comes entirely from enrichment's
+   `adjusted_top_holder_pct`, tested against a 30% threshold. For a young
+   launchpad token high concentration is *normal*, not pathological, so the
+   threshold may be measuring the population rather than the risk.
+
+**Do not relax that threshold on this evidence alone.** The disciplined next step
+is the same one that fixed the deployer gate: measure death rate by concentration
+band and find out where the risk actually sits. If death rate is flat across
+bands, the gate is filtering population, not danger.
+
 ## Do this first
 
 1. **Check the blocker.** `.venv\Scripts\python.exe scripts\preflight.py`
