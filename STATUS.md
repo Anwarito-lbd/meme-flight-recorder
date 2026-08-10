@@ -181,7 +181,42 @@ This reframes every negative backtest: the entry rule was not badly tuned, it wa
 sampling the median — where the losses are — over holding periods too short to
 reach the tail.
 
-## The one filter that survived its own test
+## WITHDRAWN 2026-08-10: the deep-pool filter does not survive a larger sample
+
+The finding below was measured at n=63 and reported as the first filter to beat
+the base rate after deleting its top three winners. **At n=166 it does not hold.**
+
+Deep (>=$50k) outcomes, n=166: median **0.001**, mean 2.02, 8% reach 2x, 4% reach
+5x. The typical deep-pool token loses essentially everything; the mean is carried
+entirely by the tail.
+
+Geometric growth per trade, on the measured distribution with real costs:
+
+| drop top | n | f=2% | f=3% | equity x after 50 trades (f=2%) |
+|---:|---:|---:|---:|---:|
+| 0 | 166 | **+0.0029** | +0.0012 | 1.16 |
+| **1** | 165 | **-0.0069** | -0.0107 | **0.71** |
+| 2 | 164 | -0.0088 | -0.0134 | 0.65 |
+| 5 | 161 | -0.0132 | -0.0197 | 0.52 |
+
+**Removing one token — a single 209.7x out of 166 — flips growth negative at
+every position size.** There is no fraction at which this strategy compounds.
+
+Two things follow, and both matter more than the withdrawn finding.
+
+**The current 10% sizing is catastrophically over-Kelly.** At f=10% growth is
+-0.0274 per trade: the account falls to **25% of starting equity over 50 trades**
+even on the tail-inclusive distribution. The growth-optimal fraction is ~2%
+(~$0.80 at $40), which the $0.37 cost floor permits. That is a real and separate
+finding: sizing is wrong by roughly 5x regardless of which strategy is run.
+
+**Selection is not where the edge is.** Recall is zero, and the one filter that
+looked like an edge was one token. Median 0.001 says the tokens that pass go to
+approximately zero, which points at **exit speed** as the only untested lever:
+the exit engine was measured against the breakout strategy, never against
+filter-and-hold. That is the next thing worth measuring, and it is cheap.
+
+## The one filter that survived its own test (SUPERSEDED — see above)
 
 `scripts/study_structural_entry.py`, over 1,694 mints with resolved outcomes,
 entering at first observation and holding:
