@@ -181,6 +181,40 @@ This reframes every negative backtest: the entry rule was not badly tuned, it wa
 sampling the median — where the losses are — over holding periods too short to
 reach the tail.
 
+## Exit speed was the last untested lever, and it does not rescue this either
+
+`scripts/study_exit_on_hold.py`. Entry at each mint's **first journalled
+observation** — a moment chosen before the outcome existed — then held under nine
+exit rules. Position at the growth-optimal 2%, real costs, n=31.
+
+| exit policy | median | dead | growth/trade | −top1 | equity x@50 |
+|---|---:|---:|---:|---:|---:|
+| hold | 0.686 | 29% | −0.0079 | −0.0089 | 0.67 |
+| trail −30% | 0.911 | **16%** | −0.0037 | −0.0048 | 0.83 |
+| time 24 bars | 0.976 | 16% | −0.0026 | −0.0041 | 0.88 |
+| **take 2x, stop −50%** | 0.884 | **13%** | **−0.0018** | −0.0025 | **0.91** |
+
+**No policy produces positive growth.** The best loses 9% of equity over 50
+trades instead of 33%.
+
+The shape is worth keeping, because it is a real trade-off rather than a null
+result: exits **do** work as protection — death rate falls from 29% to 13–16%,
+and the median rises from 0.686 to 0.98. They just cannot make it profitable,
+because capping the upside removes the tail that was paying for the losses. You
+can make this population safer or you can keep its upside; you cannot do both,
+and neither is positive.
+
+That closes the last untested lever. Selection is dead (recall zero, the one
+filter was one token), sizing is corrected but only reduces the bleed, and exits
+buy survival at the cost of the thing that pays. What remains is a different
+population or more capital — not a different rule.
+
+**A survivorship bug caught in this study, worth recording.** Its first version
+sampled currently-trending pools and entered ~1,000 bars back, reporting a median
+of 3.24 and 0% dead. That is "buy a token that is trending today, ten days ago".
+It was caught only because the numbers disagreed violently with the 0.001 median
+measured elsewhere — the disagreement was the signal, not the review.
+
 ## WITHDRAWN 2026-08-10: the deep-pool filter does not survive a larger sample
 
 The finding below was measured at n=63 and reported as the first filter to beat
