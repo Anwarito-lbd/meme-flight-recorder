@@ -62,13 +62,28 @@ consecutive_loss_limit = 3
 # stop being sellable before any stop can fill.
 equity_threshold_usd = 100.0
 max_position_usd = 10.0
-# Sized from the measured loss distribution. A replayed collapse fell from
-# $0.0522 to $0.0000303 inside one five-minute candle, straight through a stop
-# 10% below entry, so every position must be assumed recoverable at zero.
-# Observed total-loss rate was 2 of 9; at 25% per position that is ruin inside
-# ~20 trades, at 10% the account survives long enough for an edge to show.
-position_pct_of_equity = 10.0
-minimum_viable_position_usd = 3.0
+# Sized from measured GEOMETRIC GROWTH, not arithmetic expectancy. Expectancy
+# chose the previous 10%, and 10% is catastrophically over-Kelly on a
+# distribution whose median outcome is 0.001: expected log growth there is
+# -0.0274 per trade, which decays the account to 25% of starting equity over 50
+# trades even counting the tail. Measured across the deep-pool distribution
+# (n=166), growth turns positive only below about 3%:
+#
+#   f=2%  +0.0029/trade   f=3%  +0.0012   f=5%  -0.0048   f=10%  -0.0274
+#
+# 2% of $40 is $0.80, which clears the measured cost floor of $0.37 (the
+# smallest position whose round trip stays within 10% of the position). It also
+# buys ~25 concurrent shots at the aggregate cap instead of ~5, which is the
+# regime a 4-6% tail actually needs.
+#
+# The earlier justification -- "at 10% the account survives long enough for an
+# edge to show" -- was reasoning about ruin from the observed total-loss rate
+# (2 of 9) rather than computing growth. It was wrong by roughly 5x.
+position_pct_of_equity = 2.0
+# Derived, not chosen. costs.minimum_viable_position_usd puts the floor at $0.37
+# for a round trip within 10% of the position; $0.50 keeps a margin above it.
+# The previous 3.00 was a preference and it forbade the growth-optimal size.
+minimum_viable_position_usd = 0.50
 maximum_round_trip_cost_pct = 8.0
 # Liquidity is gated as a share of the pool the order actually routes through,
 # with an absolute backstop. An absolute floor alone encodes an account size.

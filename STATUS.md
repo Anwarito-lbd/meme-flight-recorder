@@ -181,6 +181,37 @@ This reframes every negative backtest: the entry rule was not badly tuned, it wa
 sampling the median — where the losses are — over holding periods too short to
 reach the tail.
 
+## Sizing corrected to 2%, and GoPlus added
+
+**Sizing.** `position_pct_of_equity` moved 10% → **2%** ($0.80 at $40), and
+`minimum_viable_position_usd` 3.00 → 0.50 (derived: the cost floor is $0.37).
+The old 10% was chosen by reasoning about ruin from an observed loss rate; the
+new figure is computed from geometric growth over the measured distribution,
+where 10% is −0.0274/trade (25% of equity left after 50 trades) and 2% is the
+first positive band. It also buys ~25 concurrent positions instead of ~5, which
+is the regime a 4–6% tail needs. **This is the single most consequential change
+in the project and it applies whatever strategy runs.**
+
+**GoPlus** (`providers/goplus.py`), free, no key, **14/14 coverage** on
+journalled deep-pool mints. It strengthens the weakest hard gate: sellability
+was static analysis only, and GoPlus reads actual mint state — `non_transferable`,
+`freezable`, `transfer_hook`, `transfer_fee`, `mintable`, `closable`.
+
+**What it does not do, tested rather than assumed.** The hope was an independent
+adjusted concentration figure to check the gate rejecting 36 of 56 winners.
+Measured against 14 real mints, GoPlus returns an **empty `tag` on every holder
+and no `lp_holders`** — nothing is labelled, so nothing can be excluded.
+`adjusted_top10_holder_pct` therefore returns `None` on this population rather
+than serving the gross number under an adjusted name.
+
+**And the check settled the underlying question anyway.** Those 14 mints show
+~100% top-10 concentration with 9–260 total holders. The concentration gate is
+**not producing false positives** — these tokens genuinely are that concentrated.
+The winners it rejected were concentrated tokens that happened to moon, which is
+the same shape as the cluster-gate finding: in this market the risky ones are
+the ones that run. That closes the "maybe the threshold is misplaced" hypothesis
+without needing to loosen anything.
+
 ## Exit speed was the last untested lever, and it does not rescue this either
 
 `scripts/study_exit_on_hold.py`. Entry at each mint's **first journalled
