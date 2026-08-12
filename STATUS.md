@@ -181,6 +181,62 @@ This reframes every negative backtest: the entry rule was not badly tuned, it wa
 sampling the median — where the losses are — over holding periods too short to
 reach the tail.
 
+## The paper book was mis-wired, and the population it would trade is worse than the base rate
+
+**The wiring bug.** `PositionMonitor.consider()` required status `ELIGIBLE`. But
+`SafetyEngine` assigns `MONITOR` **only when there are no failures at all** --
+it is a maturity label for young or launchpad-universe tokens, not a safety
+verdict. Across 18,846 mints, 52 cleared every hard gate and **49 landed on
+MONITOR and were silently discarded**. That is the entire reason the book stayed
+empty. Fixed as wiring: `accepted_statuses` is explicit, `REJECT` still cannot
+open, a recorded failure now vetoes regardless of status, and narrowing back to
+ELIGIBLE-only remains possible. No threshold moved.
+
+**The funnel** (`scripts/build_paper_funnel.py`, artifacts written):
+
+| stage | surviving | % of previous |
+|---|---:|---:|
+| discovered | 18,846 | 100% |
+| enriched (pool evidence) | 8,099 | **43%** |
+| liquidity accepted | 2,020 | **29%** |
+| buy route known | 625 | **31%** |
+| impact accepted | 222 | 36% |
+| concentration accepted | 91 | 41% |
+| cleared every gate | **52** | 57% |
+
+More than half the population is rejected for **absent data** -- 10,747 never got
+pool evidence, 1,395 had no route -- not for anything measured about the token.
+That is a collection problem, and the fix is to collect it.
+
+**Then the clean cohort was measured, and this is the finding that matters.**
+`scripts/analyse_clean_candidates.py`:
+
+| group | n | median | dead | win | >=2x | max |
+|---|---:|---:|---:|---:|---:|---:|
+| **safety clean** | 8 | **0.021** | **75%** | **0%** | **0%** | **0.2** |
+| everything else | 329 | 0.052 | 61% | 15% | 9.7% | 18,996 |
+
+**Every measurable safety-clean candidate lost money.** The best one returned
+0.2x. A further 41 of 49 could not be priced at all, which for a token means the
+pair is gone.
+
+**Mechanism, and it is structural rather than bad luck.** The clean cohort is
+*younger* than the rest -- median 4.7 minutes against 1.8 for everything else --
+and 47 of 51 are freshly `migrated` launchpad graduations, every one carrying
+`token_too_young_for_universe`. A token accumulates red flags by existing, so
+"passes every gate" selects for tokens too new to have shown one yet. **The gates
+select for youth, and youth is what dies.**
+
+This is the same shape as recall being zero, arriving from the other direction.
+It does not mean the gates are wrong -- they measure risk, and they do reject the
+things that look dangerous. It means clearing them carries no positive return
+information on this population, so a paper book fed by them would trade the worst
+subset available.
+
+Marked UNPROVEN by the script itself at n=8, which is correct. The direction is
+consistent across every measurement in this project and should not be dismissed
+for sample size, but it should not be sized on either.
+
 ## Sizing corrected to 2%, and GoPlus added
 
 **Sizing.** `position_pct_of_equity` moved 10% → **2%** ($0.80 at $40), and

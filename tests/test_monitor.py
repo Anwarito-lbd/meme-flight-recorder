@@ -384,3 +384,49 @@ def test_accepted_statuses_is_configurable() -> None:
         opened, skipped, _ = agent.consider([candidate(status=CandidateStatus.MONITOR.value)])
         assert opened == 0
         assert skipped.get("gates_not_passed") == 1
+
+
+def test_hard_failure_cannot_open_regardless_of_status() -> None:
+    """A status label must never override a recorded hard failure.
+
+    MONITOR is only assigned when there are no failures, so a payload carrying
+    both is contradictory -- and the engine must refuse it rather than trust the
+    friendlier of the two fields.
+    """
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, skipped, _ = monitor(book, FakePairProvider()).consider(
+            [
+                candidate(
+                    status=CandidateStatus.MONITOR.value,
+                    failures=["mint_authority_active", "holder_concentration_excessive"],
+                )
+            ]
+        )
+        assert opened == 0
+        assert skipped.get("hard_failure_recorded") == 1
+
+
+def test_unknown_evidence_cannot_open() -> None:
+    """Missing evidence is a failure, never a pass. Fail-closed depends on it."""
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, skipped, _ = monitor(book, FakePairProvider()).consider(
+            [
+                candidate(
+                    status=CandidateStatus.MONITOR.value,
+                    failures=["entry_route_unknown", "exit_price_impact_unknown"],
+                )
+            ]
+        )
+        assert opened == 0
+        assert skipped.get("hard_failure_recorded") == 1
+
+
+def test_clean_monitor_candidate_with_empty_failures_opens() -> None:
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, _skipped, errors = monitor(book, FakePairProvider()).consider(
+            [candidate(status=CandidateStatus.MONITOR.value, failures=[])]
+        )
+        assert opened == 1, errors

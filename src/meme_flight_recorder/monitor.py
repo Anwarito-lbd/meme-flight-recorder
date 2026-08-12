@@ -259,6 +259,15 @@ class PositionMonitor:
                 skip("gates_not_passed")
                 continue
 
+            # Defence in depth. Status and failures should never disagree --
+            # SafetyEngine assigns MONITOR only when `not failures` -- but if
+            # they ever do, the recorded failure wins. Trusting the friendlier
+            # of two contradictory fields is how a fail-closed gate quietly
+            # stops being one, and this costs one list check per candidate.
+            if candidate.get("failures"):
+                skip("hard_failure_recorded")
+                continue
+
             liquidity = float(candidate.get("liquidity_usd") or 0.0)
             if liquidity < self.config.minimum_pool_liquidity_usd:
                 skip("pool_too_shallow")
