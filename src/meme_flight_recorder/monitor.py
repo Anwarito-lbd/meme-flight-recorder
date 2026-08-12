@@ -72,6 +72,32 @@ class MonitorConfig:
     # that cannot be observed is a hope rather than a position.
     stale_after_failed_checks: int = 3
 
+    # Which safety statuses may open a position.
+    #
+    # This previously accepted only ELIGIBLE, and that was a bug rather than a
+    # policy. `SafetyEngine.evaluate` assigns MONITOR *only* when there are no
+    # failures at all:
+    #
+    #     status = REJECT if failures else ELIGIBLE
+    #     if not failures and (universe == SOLANA_LAUNCH or too_young):
+    #         status = MONITOR
+    #
+    # So MONITOR means every hard gate passed and the token is merely young or
+    # from the launchpad universe -- a maturity label, not a safety verdict.
+    # Requiring ELIGIBLE therefore silently discarded candidates that had passed
+    # everything: measured over 18,846 journalled mints, 52 cleared every gate
+    # and 49 of them landed on MONITOR, which is the entire reason the paper
+    # book stayed empty.
+    #
+    # Accepting MONITOR is not a relaxation: no gate changed, and population
+    # control still comes from `minimum_pool_liquidity_usd` below, which is the
+    # right lever for it. Listing the statuses explicitly also makes the choice
+    # visible instead of leaving it implied by one comparison.
+    accepted_statuses: tuple[str, ...] = (
+        CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,
+        CandidateStatus.MONITOR.value,
+    )
+
 
 @dataclass(frozen=True)
 class MonitorSummary:
@@ -229,7 +255,7 @@ class PositionMonitor:
             if len(live) >= self.config.maximum_open_positions:
                 skip("book_full")
                 continue
-            if candidate.get("status") != CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value:
+            if candidate.get("status") not in self.config.accepted_statuses:
                 skip("gates_not_passed")
                 continue
 

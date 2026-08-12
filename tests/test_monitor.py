@@ -339,3 +339,48 @@ def test_run_cycle_manages_the_book_before_considering_entries() -> None:
         assert summary.opened == 1
         assert summary.still_open == 1
         assert summary.considered == 1
+
+
+def test_monitor_status_can_open_because_it_means_every_gate_passed() -> None:
+    """The wiring bug that kept the paper book empty for the whole project.
+
+    SafetyEngine assigns MONITOR only when there are no failures at all -- it is
+    a maturity label for young or launchpad-universe tokens, not a safety
+    verdict. Requiring ELIGIBLE discarded 49 of the 52 candidates that had
+    cleared every gate across 18,846 journalled mints.
+    """
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, skipped, errors = monitor(book, FakePairProvider()).consider(
+            [candidate(status=CandidateStatus.MONITOR.value)]
+        )
+        assert opened == 1, (skipped, errors)
+
+
+def test_reject_status_still_cannot_open() -> None:
+    """The fix must not become a general relaxation."""
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, skipped, _ = monitor(book, FakePairProvider()).consider(
+            [candidate(status=CandidateStatus.REJECT.value)]
+        )
+        assert opened == 0
+        assert skipped.get("gates_not_passed") == 1
+
+
+def test_accepted_statuses_is_configurable() -> None:
+    """Narrowing it back to ELIGIBLE-only must remain possible."""
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        agent = PositionMonitor(
+            settings(),
+            book,
+            FakePairProvider(),
+            config=MonitorConfig(
+                accepted_statuses=(CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,)
+            ),
+            clock=lambda: NOW,
+        )
+        opened, skipped, _ = agent.consider([candidate(status=CandidateStatus.MONITOR.value)])
+        assert opened == 0
+        assert skipped.get("gates_not_passed") == 1
