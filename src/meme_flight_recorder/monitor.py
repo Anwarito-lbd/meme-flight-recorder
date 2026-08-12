@@ -44,6 +44,11 @@ from .journal import FlightRecorder
 from .models import CandidateStatus, Universe
 from .position_store import open_positions, save_closed, save_opened
 from .positions import apply_exit, mark, open_position
+from .readiness import (
+    ReadinessPolicy,
+    StrategyReadiness,
+    assess_candidate,
+)
 from .risk import PortfolioState, RiskEngine
 
 
@@ -97,6 +102,18 @@ class MonitorConfig:
         CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,
         CandidateStatus.MONITOR.value,
     )
+
+    # Safety is now separate from maturity, and both are separate from the
+    # decision to trade. `readiness_policy` answers only the last one, and its
+    # default admits no lifecycle state at all, so a safety-clean candidate is
+    # WATCH until a measured band says otherwise. Widening it is the single
+    # visible act that turns research into trading.
+    #
+    # This does not replace the status check above, it sits on top of it. A
+    # readiness policy can only ever *narrow* what opens: FAIL and UNKNOWN
+    # verdicts are blocked structurally in `readiness.assess` and no
+    # configuration here can admit them.
+    readiness_policy: ReadinessPolicy = field(default_factory=ReadinessPolicy)
 
 
 @dataclass(frozen=True)
@@ -266,6 +283,15 @@ class PositionMonitor:
             # stops being one, and this costs one list check per candidate.
             if candidate.get("failures"):
                 skip("hard_failure_recorded")
+                continue
+
+            # The maturity gate. Kept after the safety checks so that a blocked
+            # candidate is still reported as blocked for safety rather than for
+            # being young, which is the distinction that was lost when one field
+            # answered both questions.
+            verdict = assess_candidate(candidate, self.config.readiness_policy)
+            if verdict.readiness is not StrategyReadiness.ENTRY:
+                skip(f"{verdict.readiness.value}:{verdict.reason}")
                 continue
 
             liquidity = float(candidate.get("liquidity_usd") or 0.0)

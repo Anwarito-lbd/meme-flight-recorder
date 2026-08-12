@@ -28,6 +28,7 @@ from meme_flight_recorder.position_store import (
     save_opened,
 )
 from meme_flight_recorder.positions import apply_exit, open_position
+from meme_flight_recorder.readiness import LifecycleState, ReadinessPolicy
 
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
 
@@ -71,7 +72,16 @@ def candidate(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+# Maturity is now a separate gate from safety, and its default admits nothing:
+# a safety-clean graduation is WATCH until a measured band says otherwise. The
+# tests below exercise entry *mechanics* -- sizing, the book cap, exits -- so
+# they opt into a permissive maturity policy and leave the default to the tests
+# that exist to pin it down.
+ANY_MATURITY = ReadinessPolicy(entry_states=frozenset(LifecycleState))
+
+
 def monitor(book: FlightRecorder, provider: Any, **config: Any) -> PositionMonitor:
+    config.setdefault("readiness_policy", ANY_MATURITY)
     return PositionMonitor(
         settings(),
         book,
@@ -377,7 +387,8 @@ def test_accepted_statuses_is_configurable() -> None:
             book,
             FakePairProvider(),
             config=MonitorConfig(
-                accepted_statuses=(CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,)
+                accepted_statuses=(CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,),
+                readiness_policy=ANY_MATURITY,
             ),
             clock=lambda: NOW,
         )
@@ -430,3 +441,47 @@ def test_clean_monitor_candidate_with_empty_failures_opens() -> None:
             [candidate(status=CandidateStatus.MONITOR.value, failures=[])]
         )
         assert opened == 1, errors
+
+
+# ------------------------------------------------------------------- maturity
+
+
+def test_default_policy_watches_rather_than_enters() -> None:
+    """Item 9, enforced at the book: a fresh safety-clean graduation is WATCH.
+
+    The measured record is why. Of 51 safety-clean candidates, none reached 2x
+    and 92% are dead or gone, so "passed every gate" carries no positive return
+    information on this population. The candidate is still journalled -- it is
+    the lifecycle evidence the maturity study needs -- it just does not open.
+    """
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        agent = PositionMonitor(
+            settings(),
+            book,
+            FakePairProvider(),
+            config=MonitorConfig(),
+            clock=lambda: NOW,
+        )
+        opened, skipped, _ = agent.consider(
+            [candidate(status=CandidateStatus.MONITOR.value, failures=[], stage="migrated")]
+        )
+        assert opened == 0
+        assert any(reason.startswith("watch:") for reason in skipped)
+
+
+def test_maturity_policy_cannot_admit_a_failed_candidate() -> None:
+    """Widening maturity must never widen safety."""
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, skipped, _ = monitor(book, FakePairProvider()).consider(
+            [
+                candidate(
+                    status=CandidateStatus.MONITOR.value,
+                    failures=["developer_selling"],
+                    stage="migrated",
+                )
+            ]
+        )
+        assert opened == 0
+        assert skipped.get("hard_failure_recorded") == 1

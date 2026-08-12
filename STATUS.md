@@ -1,4 +1,4 @@
-# Status — 2026-08-03
+# Status — 2026-08-12
 
 Read this first. It is the handoff for anyone, or any session, picking the
 project up cold.
@@ -356,6 +356,234 @@ filter, which is what the safety gates were structurally never going to supply.
 Not wired into sizing. n=63, one collection window, outcomes only from tokens
 still quoted today.
 
+
+## 2026-08-12: three corrections that change how every earlier number reads
+
+### 1. The safety-clean cohort is OLDER, not younger. The youth mechanism is withdrawn.
+
+The previous entry read "the clean cohort is *younger* than the rest -- median
+4.7 minutes against 1.8 for everything else" and concluded "the gates select for
+youth, and youth is what dies." **4.7 is larger than 1.8.** The numbers were
+right and the word was wrong, and the mechanism built on it does not survive.
+
+`scripts/study_age_distribution.py`, full population, ages in minutes:
+
+| cohort | n | p25 | p50 | p75 | p90 |
+|---|---:|---:|---:|---:|---:|
+| safety clean | 51 | 2.97 | **4.69** | 7.40 | 15.40 |
+| safety rejected | 18,891 | 0.73 | **1.77** | 3.62 | 7.24 |
+
+The gates already select the *older* end of what they see -- 2.6x the median --
+and it still dies. The corrected statement is narrower and worse: **the entire
+observed universe is newborn.** The rejected cohort's p90 is 7.2 minutes. There
+is no mature population in this journal, so nothing here has ever tested whether
+maturity helps.
+
+Age at observation does not separate winners from deaths either, in either
+direction:
+
+| outcome | p25 | p50 | p75 | p90 |
+|---|---:|---:|---:|---:|
+| winner_10x | 1.16 | **2.61** | 7.83 | 40.35 |
+| winner_2x | 2.08 | 4.96 | 6.26 | 17.71 |
+| dead | 1.79 | **4.06** | 6.92 | 11.03 |
+| vanished | 0.81 | 1.88 | 3.71 | 7.16 |
+
+The 10x winners are *younger* at observation than the deaths. This confirms the
+already-withdrawn "age does not predict return" finding on 18,942 mints instead
+of 350. **Observation age is dead as a filter.** Entry age -- observe now, enter
+later -- is a different question and is measured below.
+
+### 2. Every expectancy figure above this line has a survivorship denominator.
+
+Same script, every mint in exactly one bucket, summing to 18,942:
+
+| bucket | n | share |
+|---|---:|---:|
+| **vanished** (no pair quoted anywhere today) | **15,940** | **84.2%** |
+| no entry price | 2,060 | 10.9% |
+| middling | 569 | 3.0% |
+| dead (<0.10x) | 308 | 1.6% |
+| >=2x / >=5x / >=10x | 23 / 14 / 28 | 0.34% |
+
+**84% of the population no longer quotes at all.** The 492 measurable outcomes,
+the 166 deep pools, the exit-policy comparison -- all were computed on the ~5%
+that still quote. Counting vanished as the death it is:
+
+| cohort | n | priced | dead (of priced) | >=2x (of priced) | dead incl. vanished |
+|---|---:|---:|---:|---:|---:|
+| safety clean | 51 | 10 | 60.0% | **0.0%** | **92.2%** |
+| safety rejected | 18,891 | 932 | 32.4% | 7.0% | 96.3% |
+
+Do not quote a rate from this project without stating whether vanished mints are
+in the denominator.
+
+### 3. Safety, maturity and readiness are now three fields, not one
+
+`src/meme_flight_recorder/readiness.py`, pure and tested without a network:
+`SafetyVerdict` (PASS/FAIL/UNKNOWN), `LifecycleState`
+(NEW/BONDING/NEAR_GRADUATION/GRADUATED/SURVIVING/MATURE/ESTABLISHED/DEAD) and
+`StrategyReadiness` (WATCH/ENTRY/BLOCK). Invariants asserted by tests rather
+than trusted to review: FAIL can never reach ENTRY, UNKNOWN can never reach
+ENTRY, DEAD can never reach ENTRY, and **PASS + GRADUATED is WATCH**. No
+threshold moved and no gate was relaxed; `CandidateStatus` and `SafetyEngine`
+are untouched, so the journal payload shape is unchanged.
+
+`MonitorConfig.readiness_policy` now gates entry, and **its default admits no
+lifecycle state at all**. Widening that tuple is the single visible act that
+turns research into trading, and it needs a study. MONITOR is no longer read as
+a trading verdict anywhere.
+
+## The maturity study: survival buys safety, not profit (PRELIMINARY, n small)
+
+`scripts/backfill_pool_history.py` caches minute candles from GeckoTerminal,
+which serves them retroactively **for dead pools too** -- that is what lets a
+study price the 84% that DexScreener can no longer see.
+`scripts/study_maturity_bands.py` then simulates the decision that was never
+tested: observe at t0, wait, and enter at t0+B only if the pool is still
+trading, using nothing from after t0+B.
+
+All-mints cohort, 4h hold, costs both legs at the measured 5.44% round trip on a
+$0.80 position:
+
+| band | n | net exp $ | PF | dead% | rug% | win% | 2x% | median |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| enter on sight | 48 | -0.4242 | 0.329 | 41.7 | 75.0 | 22.9 | 10.4 | -0.054 |
+| survive 5m | 50 | -0.3978 | 0.363 | 42.0 | 74.0 | 24.0 | 12.0 | -0.054 |
+| survive 15m | 69 | -0.3723 | 0.358 | 39.1 | 66.7 | 24.6 | 10.1 | -0.054 |
+| survive 30m | 62 | -0.3313 | 0.383 | 40.3 | 61.3 | 27.4 | 11.3 | -0.054 |
+| survive 1h | 49 | **-0.2962** | 0.397 | 34.7 | 57.1 | 32.7 | 12.2 | -0.052 |
+| survive 2h | 34 | -0.3480 | 0.221 | 20.6 | 50.0 | 35.3 | 2.9 | 0.229 |
+| survive 6h | 20 | -0.2665 | 0.089 | **15.0** | **30.0** | **45.0** | 0.0 | **0.973** |
+
+**Every band is negative after costs, and no band has a profit factor above
+0.4.** What survival *does* buy is monotone and large: death 41.7% -> 15.0%, rug
+75% -> 30%, win rate 22.9% -> 45.0%, median -0.054 -> 0.973. And it costs the
+tail: the 2x rate collapses from 12.2% at 1h to 0.0% by 6h.
+
+**This is the same trade-off the exit study found, arriving from the other
+direction: you can make this population safer or you can keep its upside, and
+neither is positive.** Waiting is not a different answer, it is the same answer.
+
+The safety-PASS cohort is worse and unambiguous -- **0% win rate at every band on
+both the development and held-out splits**, every trade a total loss.
+
+**Preliminary and marked so.** The candle cache covers 73 of 18,942 mints at the
+time of writing; the backfill is priority-ordered (safety-clean first, then
+deepest pools) and rate-limited to roughly 16s/mint by the provider, so it needs
+to run for hours before these n are worth defending. Re-run both scripts as it
+fills. The direction is consistent with every other measurement in this project,
+but the numbers are not yet sized on.
+
+**A defect found by verification, worth recording.** The first version scored a
+position unsellable if the pool had not printed within 30 minutes of the exit,
+and reported 7 of 7 trades as total losses. One of those pools went on trading
+for another 34 hours. **No trades is quiet, not empty** -- the same "absent is
+not zero" error, committed in a new place. The exit now fills at the next print
+at or after the exit moment, whenever it arrives, and only a pool that never
+prints again is a total loss. That correction moved death rates from 62-30% to
+42-15%, so it was not cosmetic.
+
+
+## 2026-08-12 (later): the provider blocker is gone, and the streaming question is answered
+
+### Jupiter is unblocked. `preflight.py` passes end to end for the first time.
+
+A Jupiter API key moved quoting from the exhausted keyless `lite-api` host to
+`api.jup.ag`. Measured on the same quote: **keyless 188ms, keyed 125ms**,
+identical `outAmount` and route plan. `JupiterQuoteProvider` reads
+`JUPITER_API_KEY` and falls back to the keyless host when it is absent, so a
+missing optional key degrades throughput and never stops the system.
+
+This retires the item that has been blocker #1 in this file since 2026-08-03:
+route and impact evidence is available again, so the fail-closed gates stop
+rejecting on `entry_route_unknown` / `*_impact_unknown`. **13 of 56 winners were
+rejected purely on that missing evidence.**
+
+### Birdeye replaces the candle backfill, and carries a trap that must not be forgotten
+
+Birdeye serves OHLCV **keyed by mint**, not by pool. Two consequences:
+
+- **Coverage**: 16,989 journalled mints can be backfilled against 10,618 with the
+  pool-keyed provider, because 8,324 mints never carried a pool address.
+- **Speed**: ~1.05s/mint against a measured ~16s/mint for GeckoTerminal, whose
+  free tier throttles far below its published 30/min. Full coverage moves from
+  roughly 47 hours to roughly 5.
+
+**The trap, verified on a real journalled mint before any of it was believed.**
+Birdeye returns a candle for *every* minute whether or not anyone traded,
+carrying the last close forward. One rugged token returned **1,000 candles of
+which 963 had zero volume**, still quoting a price sixteen hours after its final
+trade. Read naively that is a live token at a stable price; it is a corpse with
+a stale tag on it. `providers/birdeye.py` therefore treats **a candle with no
+volume as not a price** — `trades_only` drops them and `last_trade_at` is the
+only honest input to a survival question. The backfill stores traded minutes
+only, so a cached row means the same thing whichever provider filled it.
+
+### Helius `transactionSubscribe` is NOT available on this plan. Measured, not assumed.
+
+`scripts/probe_helius_stream.py` asked directly and got:
+
+    {"code": -32600, "message": "transactionSubscribe is not available on the free plan"}
+
+The documented fallback works and was measured over 15 seconds:
+
+| stage | measurement |
+|---|---|
+| connect | 828 ms |
+| subscribe (4 program logs + slot) | 1,047 ms cumulative |
+| events received | **37,625 in 15s (~2,508/sec)** |
+| slot notifications | 32 |
+| inter-event gap | p50 0ms, p95 0ms, p99 16ms, max 344ms |
+| decode | p50 0ms, max 16ms |
+
+Subscribed to Pump.fun, PumpSwap, Raydium AMM v4 and Meteora DLMM logs plus
+`slotSubscribe`. **Caveat on the percentiles: the host clock granularity is
+16ms, so every p50/p95 of "0ms" means "below measurement resolution", not zero.**
+Do not quote these as sub-millisecond without a finer timer.
+
+The operational finding is the volume. At ~2,500 events/sec the stream is
+deliverable and decoding is nearly free, but almost none of it is a launch —
+filtering has to happen before any per-event work, or the queue backs up until
+the stream means nothing.
+
+### Providers now answer in an envelope, and the mesh cannot be blocked
+
+`providers/envelope.py`: every provider answer carries `source`, `observed_at`,
+`fetched_at`, `ttl_seconds`, `confidence`, `failure` and a monotonic
+`latency_ms`. `FailureKind` separates EMPTY (the provider looked and found
+nothing — *is* evidence) from RATE_LIMITED / TIMEOUT / TRANSPORT / NOT_CONFIGURED
+(says nothing about the token — *not* evidence). `is_evidence` is what a
+fail-closed gate reads, so a 429 can no longer enter a study as a token that
+stopped trading.
+
+**A bug caught by its own test.** `first_usable` originally ran the providers in
+a `with ThreadPoolExecutor(...)` block. `__exit__` joins every worker, so the
+hot path waited for the slowest provider *after* the deadline had already
+passed — precisely what the deadline exists to prevent. A test asserting that a
+5s provider cannot delay a 0.5s deadline failed, which is how it was found. The
+pool is now shut down with `wait=False, cancel_futures=True`.
+
+### The maturity study at n=166: the pattern holds and is still negative
+
+Cache coverage 253 of 18,956 mints (1.3%) and growing. All-mints cohort, 4h
+hold, costs both legs:
+
+| band | n | net exp $ | PF | dead% | rug% | win% | 2x% | median |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| enter on sight | 166 | -0.2764 | 0.593 | 44.0 | 79.5 | 13.3 | 7.8 | -0.054 |
+| survive 15m | 168 | -0.3672 | 0.382 | 38.7 | 66.1 | 17.9 | 8.9 | -0.054 |
+| survive 30m | 145 | -0.2861 | 0.473 | 38.6 | 57.9 | 19.3 | 10.3 | -0.054 |
+| survive 1h | 109 | -0.2763 | 0.425 | 33.0 | 52.3 | 25.7 | 9.2 | -0.015 |
+| survive 2h | 81 | -0.2991 | 0.259 | 16.0 | 42.0 | 30.9 | 3.7 | 0.691 |
+| survive 6h | 44 | **-0.2091** | **0.155** | **11.4** | **22.7** | **38.6** | **0.0** | **0.939** |
+
+Sample roughly tripled since the first run and **nothing reversed**. Death
+44.0% -> 11.4%, rug 79.5% -> 22.7%, win 13.3% -> 38.6%, median -0.054 -> 0.939.
+And the profit factor *falls* as the band lengthens, 0.593 -> 0.155, because the
+2x rate goes 7.8% -> **0.0%**. Waiting removes the losers and the winners
+together. **Every band is negative after costs. NO EDGE FOUND.**
+
 ## Findings that must not be rediscovered
 
 **The deployer gate was running backwards, and is now a band.** Over 871 mints:
@@ -493,6 +721,11 @@ the host slept.
 | command | what it answers |
 |---|---|
 | `scripts/report_track_record.py` | Where is the forward record against the gate? |
+| `scripts/study_age_distribution.py` | How old is each cohort, and what happened to it? |
+| `scripts/backfill_pool_history.py` | Cache minute candles, dead pools included. |
+| `scripts/study_maturity_bands.py` | Does waiting until survival make entry pay? |
+| `scripts/replay_paper_strategy.py` | What would the book have done, chronologically? |
+| `scripts/probe_helius_stream.py` | Which streaming path is available, and how fast? |
 | `scripts/study_structural_entry.py` | Does a structural filter beat the base rate? |
 | `scripts/study_return_distribution.py` | What is the shape of returns, and is it a tail? |
 | `scripts/compare_exit_policies.py` | Which exit policy survives? |

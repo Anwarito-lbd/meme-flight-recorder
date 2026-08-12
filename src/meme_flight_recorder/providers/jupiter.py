@@ -19,6 +19,7 @@ same result.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -41,23 +42,43 @@ class RouteEvidence:
     raw: dict[str, Any]
 
 
+# Two endpoints, and the difference is the project's single worst blocker.
+# The keyless lite tier exhausted its quota on 2026-08-03 and a single request
+# still returned 429 an hour later; with route and impact evidence missing the
+# fail-closed gates rejected everything, so nothing could open. A key moves the
+# same call to the metered host. Measured against the same quote: keyless 188ms,
+# keyed 125ms, identical outAmount and route plan.
+LITE_BASE_URL = "https://lite-api.jup.ag/swap/v1"
+KEYED_BASE_URL = "https://api.jup.ag/swap/v1"
+
+
 class JupiterQuoteProvider:
     """Quote-only adapter. It cannot build, sign, or broadcast a transaction."""
 
-    base_url = "https://lite-api.jup.ag/swap/v1"
+    base_url = LITE_BASE_URL
 
     def __init__(
         self,
         *,
+        api_key: str | None = None,
         failures_before_open: int = 5,
         cooldown_seconds: float = 300.0,
         clock: Any = time.monotonic,
     ) -> None:
+        # An explicit argument wins, then the environment. Falling back to the
+        # keyless host when no key exists is deliberate: a missing optional key
+        # must degrade throughput, never stop the system.
+        self.api_key = api_key if api_key is not None else os.getenv("JUPITER_API_KEY", "")
+        self.base_url = KEYED_BASE_URL if self.api_key else LITE_BASE_URL
         self.failures_before_open = failures_before_open
         self.cooldown_seconds = cooldown_seconds
         self._clock = clock
         self._consecutive_limits = 0
         self._open_until: float = 0.0
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {"x-api-key": self.api_key} if self.api_key else {}
 
     @property
     def rate_limited(self) -> bool:
@@ -96,6 +117,7 @@ class JupiterQuoteProvider:
                     "slippageBps": max(1, min(slippage_bps, 500)),
                     "restrictIntermediateTokens": "true",
                 },
+                headers=self.headers,
             )
         except Exception as error:
             if "429" in str(error):
