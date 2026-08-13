@@ -115,6 +115,22 @@ class MonitorConfig:
     # configuration here can admit them.
     readiness_policy: ReadinessPolicy = field(default_factory=ReadinessPolicy)
 
+    # Fixed position size in dollars, overriding percent-of-equity sizing.
+    # None keeps the measured 2% rule, which is what production runs. This
+    # exists so position size can be *studied* -- the round-trip cost is
+    # 5.44% at $0.80 and falls sharply as the fixed network fee amortises,
+    # so size and cost cannot be reasoned about separately.
+    position_usd_override: float | None = None
+
+    # Exit levels, both disabled by default because `evaluate_exit` guards them
+    # on `> 0` and the deep-pool result was measured under a pure hold.
+    # take_profit_multiple of 2.0 sells at 2x; stop_loss_pct of 50 sells at -50%.
+    # Measured caveat that must not be forgotten when enabling these: capping
+    # the upside removes the tail that was paying for the losses, and a replayed
+    # collapse fell 1,700x below its stop inside one candle.
+    take_profit_multiple: float = 0.0
+    stop_loss_pct: float = 0.0
+
 
 @dataclass(frozen=True)
 class MonitorSummary:
@@ -304,23 +320,36 @@ class PositionMonitor:
                 skip("no_price")
                 continue
 
+            sized_usd = (
+                self.config.position_usd_override
+                if self.config.position_usd_override is not None
+                else self.settings.starting_equity_usd * micro.position_pct_of_equity / 100.0
+            )
             approval = self.risk.approve(
                 Universe.SOLANA_EMERGING,
                 PortfolioState(equity_usd=self.settings.starting_equity_usd),
                 entry_price=price,
                 pool_liquidity_usd=liquidity,
                 estimated_round_trip_cost_pct=round_trip_cost(
-                    self.settings.starting_equity_usd * micro.position_pct_of_equity / 100.0,
-                    self.settings.costs,
+                    sized_usd, self.settings.costs
                 ).pct_of_position,
             )
             if not approval.approved:
                 skip(f"risk:{approval.reason}")
                 continue
 
+            # An override replaces the risk engine's *sizing*, never its
+            # *approval*. The engine still vetoes on pool share, cost ceiling
+            # and liquidity, so a larger position can still be refused for
+            # taking too much of the pool -- which is the check that matters
+            # most as size grows.
+            position_usd = (
+                self.config.position_usd_override
+                if self.config.position_usd_override is not None
+                else approval.position_value_usd
+            )
             leg_cost_pct = (
-                round_trip_cost(approval.position_value_usd, self.settings.costs).pct_of_position
-                / 2.0
+                round_trip_cost(position_usd, self.settings.costs).pct_of_position / 2.0
             )
             try:
                 # stop_price and breakout_level are zero on purpose: both exits
@@ -331,9 +360,17 @@ class PositionMonitor:
                     symbol=str(candidate.get("symbol") or ""),
                     at=self.clock(),
                     price=price,
-                    position_usd=approval.position_value_usd,
-                    stop_price=0.0,
-                    target_price=0.0,
+                    position_usd=position_usd,
+                    stop_price=(
+                        price * (1.0 - self.config.stop_loss_pct / 100.0)
+                        if self.config.stop_loss_pct > 0
+                        else 0.0
+                    ),
+                    target_price=(
+                        price * self.config.take_profit_multiple
+                        if self.config.take_profit_multiple > 0
+                        else 0.0
+                    ),
                     breakout_level=0.0,
                     liquidity_usd=liquidity,
                     cost_pct=leg_cost_pct,

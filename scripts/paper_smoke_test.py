@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from meme_flight_recorder.config import load_settings
+from meme_flight_recorder.costs import round_trip_cost
 from meme_flight_recorder.discovery import MoverFilter, select_movers
 from meme_flight_recorder.env import load_env
 from meme_flight_recorder.journal import FlightRecorder
@@ -94,6 +95,15 @@ def main() -> int:
         action="store_true",
         help="Set the hold limit to zero so the exit path runs and PnL is realised.",
     )
+    parser.add_argument(
+        "--position-usd",
+        type=float,
+        default=None,
+        help="Fixed dollar size, overriding the measured 2%-of-equity rule.",
+    )
+    parser.add_argument("--take-profit", type=float, default=0.0, help="e.g. 2.0 sells at 2x.")
+    parser.add_argument("--stop-loss", type=float, default=0.0, help="e.g. 50 sells at -50%%.")
+    parser.add_argument("--hold-minutes", type=float, default=10_080.0)
     arguments = parser.parse_args()
 
     load_env()
@@ -108,14 +118,45 @@ def main() -> int:
     config = MonitorConfig(
         minimum_pool_liquidity_usd=arguments.minimum_liquidity,
         maximum_open_positions=5,
-        maximum_hold_minutes=0 if arguments.force_exit else 10_080,
+        maximum_hold_minutes=0 if arguments.force_exit else int(arguments.hold_minutes),
+        position_usd_override=arguments.position_usd,
+        take_profit_multiple=arguments.take_profit,
+        stop_loss_pct=arguments.stop_loss,
         # Permissive *maturity* only. Safety is untouched and unrelaxable.
         readiness_policy=ReadinessPolicy(entry_states=frozenset(LifecycleState)),
     )
     monitor = PositionMonitor(settings, book, provider, config=config)
 
+    size_text = (
+        f"${arguments.position_usd:.2f} fixed"
+        if arguments.position_usd is not None
+        else f"{settings.micro.position_pct_of_equity}% of equity"
+    )
+    probe = round_trip_cost(
+        arguments.position_usd
+        if arguments.position_usd is not None
+        else settings.starting_equity_usd * settings.micro.position_pct_of_equity / 100.0,
+        settings.costs,
+    )
     print(f"paper smoke test -- writes to {SMOKE_DB}, never the production journal")
-    print(f"strategy id: {STRATEGY_ID}   paper only, no key loaded\n")
+    print(f"strategy id: {STRATEGY_ID}   paper only, no key loaded")
+    print(
+        f"size: {size_text}   round trip {probe.pct_of_position:.3f}%   "
+        f"breakeven {probe.breakeven_multiple:.4f}x"
+    )
+    if arguments.take_profit or arguments.stop_loss:
+        print(
+            f"exits: take profit {arguments.take_profit or 'off'}x   "
+            f"stop loss {arguments.stop_loss or 'off'}%   hold {arguments.hold_minutes:.0f}m"
+        )
+    if arguments.position_usd and arguments.position_usd > settings.starting_equity_usd * 0.05:
+        share = 100.0 * arguments.position_usd / settings.starting_equity_usd
+        print(
+            f"WARNING: ${arguments.position_usd:.2f} is {share:.0f}% of ${settings.starting_equity_usd:.0f} "
+            f"equity. The measured growth-optimal fraction on this distribution is 2%; "
+            f"10% compounds to 25% of starting equity over 50 trades."
+        )
+    print()
 
     print("fetching real trending pools ...")
     candidates = live_candidates(arguments.minimum_liquidity, arguments.limit)
@@ -155,8 +196,36 @@ def main() -> int:
 
     closed = closed_positions(book)
     print(f"\n--- closed positions: {len(closed)} ---")
-    for record in closed[:10]:
-        print(f"  {record}")
+    if closed:
+        print(
+            f"  {'symbol':<10}{'entry':<14}{'exit':<14}{'gross':>8}{'fees $':>9}"
+            f"{'net $':>9}{'reason':>22}"
+        )
+        total_net = 0.0
+        total_fees = 0.0
+        for record in closed:
+            entry_fill = record.fills[0]
+            exit_fill = record.fills[-1]
+            notional = entry_fill.price * entry_fill.quantity
+            gross = exit_fill.price / entry_fill.price if entry_fill.price else 0.0
+            fees = entry_fill.cost_usd + exit_fill.cost_usd
+            net = notional * gross - notional - fees
+            total_net += net
+            total_fees += fees
+            print(
+                f"  {record.symbol:<10}{entry_fill.price:<14.8g}{exit_fill.price:<14.8g}"
+                f"{gross:>8.4f}{fees:>9.4f}{net:>9.4f}"
+                f"{record.close_reason.value if record.close_reason else '':>22}"
+            )
+        wins = [1 for r in closed if r.fills[-1].price > r.fills[0].price]
+        print(
+            f"  {'TOTAL':<10}{'':<28}{'':>8}{total_fees:>9.4f}{total_net:>9.4f}"
+            f"{len(closed):>10} trades"
+        )
+        print(
+            f"  win rate {100.0 * len(wins) / len(closed):.1f}%   "
+            f"fees are {100.0 * total_fees / max(1e-9, abs(total_net)):.0f}% of the loss"
+        )
 
     print("\n--- journal ---")
     # PositionMonitor writes the cohort ledger, which is a deliberately
