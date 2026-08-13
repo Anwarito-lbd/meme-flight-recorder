@@ -36,7 +36,9 @@ from meme_flight_recorder.env import load_env
 from meme_flight_recorder.venues import Action, decode_transaction
 
 # Helius free tier. Derived from what it grants, not what it documents.
-DELAY_SECONDS = 0.12
+# Raised from 0.12 after measuring a 44% HTTPError rate: the free tier grants
+# less than the burst this was asking for.
+DELAY_SECONDS = 0.25
 
 
 def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
@@ -129,7 +131,13 @@ def main() -> int:
 
     out = sqlite3.connect(arguments.out)
     ensure_schema(out)
-    done = {row[0] for row in out.execute("select mint from mint_status")}
+    # Errors are excluded so they retry. An HTTPError is a rate limit or a
+    # transient outage -- it says nothing about the mint, and recording it as
+    # "done" would permanently discard a mint for a provider hiccup.
+    done = {
+        row[0]
+        for row in out.execute("select mint from mint_status where status != 'error'")
+    }
     pending = [mint for mint in candidates if mint not in done][: arguments.limit]
     print(f"mints with forward outcomes: {len(candidates)}   already done: {len(done)}")
     print(f"processing {len(pending)} this run\n")
