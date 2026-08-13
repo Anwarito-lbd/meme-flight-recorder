@@ -12,3 +12,4 @@ artifacts/
 
 # collector logs
 logs/
+data/paper_smoke.db
