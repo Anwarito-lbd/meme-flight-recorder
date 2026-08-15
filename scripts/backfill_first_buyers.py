@@ -124,7 +124,17 @@ def main() -> int:
     candidates = [
         row[0]
         for row in history.execute(
-            "select mint from fetches where status = 'ok' order by candle_count desc"
+            # Ordered by a hash of the mint, which is outcome-independent.
+            #
+            # This previously read 'order by candle_count desc', which fed the
+            # study the most-heavily-traded tokens first -- i.e. the survivors.
+            # Measured: the selected population had a median of 891 candles
+            # against 50 for the cache as a whole, and reported a 0.0% death
+            # rate where the base rate is 60-64%. The features looked
+            # spectacular because every token in the sample had already lived.
+            #
+            # Sampling must never be correlated with the outcome being measured.
+            "select mint from fetches where status = 'ok' order by substr(mint, -6), mint"
         )
     ]
     history.close()
