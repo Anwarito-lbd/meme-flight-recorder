@@ -79,7 +79,7 @@ produces trades immediately and makes every number after that worthless.
 ## Commands
 
 ```bash
-.venv\Scripts\python.exe -m pytest -q                    # 335 tests
+.venv\Scripts\python.exe -m pytest -q                    # 487 tests
 .venv\Scripts\python.exe -m ruff check src tests scripts
 .venv\Scripts\python.exe scripts\preflight.py            # provider health — run first
 .venv\Scripts\python.exe -m meme_flight_recorder.cli collect --paper-trade

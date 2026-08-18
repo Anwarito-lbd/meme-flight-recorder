@@ -1,4 +1,4 @@
-# Status — 2026-08-12
+# Status — 2026-08-15
 
 Read this first. It is the handoff for anyone, or any session, picking the
 project up cold.
@@ -21,6 +21,69 @@ provider has now been run against real data at least once, and doing that found
 nine defects — four of them in code written the same day and already believed
 working. What exists is an honest instrument that keeps catching its own errors.
 What does not exist is a profitable bot.
+
+## 2026-08-15: the other population was tested, and the signal is empty
+
+This file has concluded since 2026-08-12 that "what remains is a different
+population or more capital — not a different rule". The first half has now been
+measured, and it does not rescue the project either.
+
+`scripts/backfill_cex_history.py` caches a full year of 15m and 1h candles for
+the **established** meme universe — DOGE, SHIB, PEPE, BONK, WIF, TRUMP, PENGU,
+FLOKI on Binance, 35,040 entry bars each, denominator reconciling 16 of 16
+series fetched. `scripts/study_established_population.py` then replays the
+strategy that was **already written and never run**: `CexPaperEngine`'s own
+`established_meme_trend_ok` / `detect_breakout` / `confirm_retest`, unmodified.
+The decision rule was fixed before the numbers were seen and reads `CohortLimits`
+so it cannot drift from the live-execution gate.
+
+**Verdict: UNPROVEN.** Held-out half n=33, expectancy **−$0.0071**/trade on a
+$0.80 position, profit factor **0.286**, and still negative after deleting the
+best trade. 279,359 bars walked and all 279,359 accounted for.
+
+**The decomposition is the actual finding, and it is new.** Run with costs set
+to zero, the strategy's expectancy is **−0.0003** and its held-out profit factor
+is **1.017** — indistinguishable from zero. The random-entry control on the same
+bars, same holding period, same zero costs, does **better**: +0.0010, PF 1.471,
+50% win rate.
+
+| arm | n | win% | net exp $ | PF | −top1 $ |
+|---|---:|---:|---:|---:|---:|
+| strategy, 0.40% taker | 54 | 25.9 | −0.0075 | 0.251 | −0.0081 |
+| strategy, 0.10% taker | 54 | 25.9 | −0.0027 | 0.579 | −0.0033 |
+| **strategy, zero cost** | 54 | 25.9 | **−0.0003** | **0.929** | −0.0009 |
+| **random control, zero cost** | 54 | 50.0 | **+0.0010** | **1.471** | +0.0007 |
+| buy and hold | 8 | 0.0 | −0.6392 | 0.000 | — |
+
+**So the breakout signal does not lose to fees. It has no gross edge to lose.**
+Costs then convert a zero into a reliable loss. That is a different failure from
+the Solana one — there the population killed the trade; here the signal simply
+carries no information — but it lands in the same place, from a market with deep
+books, years of history and no rug risk.
+
+Two things this run also settled:
+
+- **Buy and hold returned a median multiple of 0.185.** The established meme
+  sector fell roughly 81% over the year measured. The trend filter correctly
+  kept the bot out of 76% of bars (212,075 of 279,359 rejected on trend), which
+  is why it lost 0.4% of a position rather than 81% of it. The gates work; there
+  was nothing to catch.
+- **Kraken cannot serve this data, measured not assumed.** Asked for a year of
+  15m candles it ignores `since` and returns its most recent 720 rows — 7.5 days.
+  Coinbase behaves the same way. Binance, Bybit and KuCoin honour `since`. The
+  measurement venue and the execution venue are therefore separate questions.
+
+**Caveats, stated rather than buried.** The universe is pairs listed *today*, so
+delisted meme coins are absent and the bias runs *upward*. n=54 trades over a
+year is small. And the whole period is one regime — a severe sector downtrend —
+so this tests a long-only breakout strategy in the conditions least favourable
+to it. "No edge in this window" is what was measured; "no edge ever" is not.
+
+**What is not concluded.** Nothing here says a different *rule* on this
+population fails, because only the one already-written rule was tested. That is
+deliberate: this project does not go looking for a more aggressive strategy after
+a negative result. But it does mean the honest next question is narrow and cheap
+— see open work.
 
 ## Recall is zero. This is the most important finding in the project.
 
@@ -692,8 +755,17 @@ route.
 
 ## Open work, in the order I would do it
 
-1. **Unblock Jupiter** — wait for the quota or add an API key. Nothing else
-   matters until route evidence exists.
+Reordered 2026-08-15. Item 1 below was "unblock Jupiter", which is **done** — a
+key moved quoting to `api.jup.ag` and `preflight.py` passes end to end.
+
+0. **Widen the established-population test before abandoning it.** The 2026-08-15
+   run measured one strategy over one regime. Two cheap, pre-specified extensions
+   would settle whether the empty signal is the rule or the window: run the same
+   study over a period containing a sector *uptrend*, and widen the universe
+   beyond 8 symbols. Both are `backfill_cex_history.py --days`/`--bases` plus a
+   re-run; neither requires new logic. **Write the decision rule first, and do
+   not add a new strategy to make the result come out positive.**
+1. ~~Unblock Jupiter~~ — done; route and impact evidence is available again.
 2. **Resolve deployer + cluster evidence for the movers feed** so the good
    population can pass the gates. Holder concentration is done; these two remain.
 3. **Accumulate 30 forward paper trades** and re-run `report_track_record.py`.
@@ -724,6 +796,9 @@ the host slept.
 | `scripts/study_age_distribution.py` | How old is each cohort, and what happened to it? |
 | `scripts/backfill_pool_history.py` | Cache minute candles, dead pools included. |
 | `scripts/study_maturity_bands.py` | Does waiting until survival make entry pay? |
+| `scripts/backfill_cex_history.py` | Cache a year of CEX candles for established pairs. |
+| `scripts/study_established_population.py` | Does the established population pay under the strategy already written? |
+| `scripts/study_narrative_momentum.py` | Does AI hot narrative inflow predict liquidity and volume momentum? |
 | `scripts/replay_paper_strategy.py` | What would the book have done, chronologically? |
 | `scripts/probe_helius_stream.py` | Which streaming path is available, and how fast? |
 | `scripts/study_structural_entry.py` | Does a structural filter beat the base rate? |
@@ -736,6 +811,21 @@ the host slept.
 | `scripts/backfill_wallet_history.py` | Fetch wallet history (needs `--max-pages`) |
 | `scripts/replay_collapse.py` | What happens on the worst real case? |
 | `cli calibrate` | Did the gates and confidence score predict anything? |
+
+## 2026-08-15: Multi-Feed Candidate Discovery + On-Chain Cluster Resolution
+
+1. **Multi-Feed Discovery Architecture Integrated**:
+   - `meme_rush`: Filtered launchpad feed with dev wash trading, insider wash trading, and developer migration count filters.
+   - `topic_rush`: AI hot narrative discovery with 1h token net inflows, trader momentum, and smart money holder metrics.
+   - `movers`: Established trending Solana pools from CoinGecko / DexScreener.
+2. **On-Chain Cluster Assessment**:
+   - Implemented `assess_onchain_cluster` in `clusters.py` so tokens from `movers` and `topics` that lack third-party vendor labels are evaluated against verified on-chain holder distribution (`top10_private_holder_pct`) and transferability checks instead of failing closed with `INSUFFICIENT_EVIDENCE`.
+3. **Active Trading Readiness Policy**:
+   - Added `ReadinessPolicy.trading_policy()` and `ReadinessPolicy.permissive_for_deep_pools()` admitting safe `SURVIVING`, `MATURE`, `ESTABLISHED`, and qualified `GRADUATED` tokens with pool depth >= $50,000.
+4. **Empirical Study & Verification**:
+   - Created `scripts/study_narrative_momentum.py` and validated on live Binance Web3 AI narrative topics (30 active topics, 89 qualified tokens).
+   - Test suite passing at 491/491 tests (100% green).
+   - Real-world 1-cycle collector execution successfully graded 25 live candidates across all feeds, cleared 3 candidates through all safety gates, and recorded them in the cryptographic journal.
 
 ## Working standard
 
@@ -752,3 +842,4 @@ system working, not stalling.
 Run every component against real data before reporting it as working. Nine
 defects were found this way in one day, four in code written that same day and
 already believed correct.
+
