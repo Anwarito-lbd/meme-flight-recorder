@@ -85,6 +85,49 @@ deliberate: this project does not go looking for a more aggressive strategy afte
 a negative result. But it does mean the honest next question is narrow and cheap
 — see open work.
 
+## Where a fresh session should start (written 2026-08-15)
+
+The scout is built and runs. Nothing trades. The three things worth doing next,
+in order:
+
+1. **Run the collector to accumulate a forward record.** The evidence gate reads
+   0 of 30 trades and cannot move until it does.
+   `cli collect --source all --limit 40 --paper-trade --position-usd 10.0`
+   A cycle takes ~13 minutes. The collector currently produces **11-12 ELIGIBLE
+   per cycle** — recall is no longer zero, because the keyed Jupiter quota
+   restored route and impact evidence.
+2. **Fix `liquidity_unknown`.** It is the top rejection reason on every single
+   cycle at 66-78 per cycle, roughly half of everything observed. It is *missing
+   data*, not a judgement about any token — the same class of failure that
+   rejected a 3,705,155x winner on `liquidity_unknown, entry_route_unknown,
+   exit_route_unknown`. Supplying that evidence is worth more than any new gate.
+3. **Then the Phase 4 studies**, which need the outcomes step 1 produces.
+
+**Operating decisions the operator has made — do not re-litigate:**
+
+- **$50 equity, $10 per position** (20% per trade, 5 concurrent). Chosen on cost:
+  the round trip is 1.81% of $10 against 5.44% of $0.80.
+- **X API: not being paid for.** Reachable at post-gate volume (~$6/month) but
+  the operator has declined. Do not propose it again unless asked. The registry
+  skills that proxy X (`fetcher-sh/fetcher-skills@twitter-api`, 2.4K installs;
+  `xquik-dev/x-twitter-scraper`, 46) are **also paid, with undisclosed
+  per-call pricing** — inspected 2026-08-15, both recorded in
+  `docs/third-party-audit.md`. There is no free X route: the free tier was
+  discontinued, and scraping breaches both X's ToS and this project's
+  public-information rule.
+- **Sentiment: local or nothing.** `SCOUT_SENTIMENT_BACKEND` defaults to `none`.
+  Ollama is installed on this host with no models pulled; `ollama pull
+  qwen2.5:3b` plus `SCOUT_SENTIMENT_BACKEND=ollama` in `.env` turns it on for
+  $0. Expect UNKNOWN on most candidates regardless.
+- **Nothing signs.** No API keys were entered by the assistant and none should
+  be; every provider reads a named environment variable the operator fills in.
+
+**The one trap to know about.** `ReadinessPolicy.trading_policy()` exists and
+admits SURVIVING / MATURE / ESTABLISHED / deep-graduated tokens. Every shipped
+`[strictness.*]` block sets `readiness_policy = []`, so nothing can open a
+position. Calling that classmethod is the single visible act that turns research
+into trading, and it needs a study first.
+
 ## 2026-08-15: X's API is no longer priced out — the recorded claim was stale
 
 This file has said since early on that "X's API costs more per month than the

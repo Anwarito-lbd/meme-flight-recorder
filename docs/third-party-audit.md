@@ -111,6 +111,26 @@ The operator confirmed neither contained a specific mechanism to measure.
 The workflow screenshot from one of them *was* assessable and is recorded in
 `STATUS.md` — node by node, against measurements already in this repo.
 
+### X/Twitter data skills — REJECT (cost, not capability)
+
+Searched the registry 2026-08-15 for a free X feed. **There is no free route.**
+The free API tier was discontinued in February 2026; scraping breaches both X's
+Terms of Service and this project's public-information-only rule.
+
+| Skill | Installs | Cost | Credentials |
+|---|---:|---|---|
+| `fetcher-sh/fetcher-skills@twitter-api` | 2.4K | pay-per-call, **pricing undisclosed** | none (they bill directly) |
+| `xquik-dev/x-twitter-scraper@xquik-social-research` | 46 | unspecified | `XQUIK_API_KEY` |
+
+`fetcher-sh` is the more credible of the two — no OAuth dance, meaningful install
+count — but **undisclosed per-call pricing cannot be budgeted against a $50
+account**, which is disqualifying on its own terms rather than on quality.
+
+X's own API is now pay-per-use with no monthly minimum at $0.005 per post read,
+which makes it reachable at post-gate volume (~$6/month) and ruinous at feed
+volume (10,000 reads = $50 = the whole account). **The operator has declined to
+pay for it.** Recorded as a decision, not an open question.
+
 ## Pending
 
 ### MobyAgent — NOT YET AUDITED
