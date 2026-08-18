@@ -17,8 +17,14 @@ true in every session.
   forward trades, positive expectancy after costs, profit factor >1.2, no single
   trade >⅓ of profit, drawdown within limit. Failing it is never a reason to seek
   a more aggressive strategy.
-- **Capital is $10–40 real.** Positions ~10% of equity (~$4). Do not propose
-  strategies needing private RPC or Jito tips; they are unreachable at this size.
+- **Capital is $50 real, at $10 per position** (operator's setting, 2026-08-15).
+  That is 20% of equity per trade and caps the book at 5 concurrent. It is chosen
+  on **cost**: the round trip is 1.81% of a $10 position against 5.44% of $0.80,
+  which moved profit factor 0.138 → 0.476 on identical entries. The accepted cost
+  is shot count, since capturing a p≈5.8% tail needs roughly 50 attempts. The
+  earlier "~10% of equity" here was withdrawn — measured geometric growth at 10%
+  is −0.0274/trade. Do not propose strategies needing private RPC or Jito tips;
+  they are unreachable at this size.
 - **Public information only.** No leaked paid-group calls, hacked accounts, or
   pre-announcement listings.
 - **Never commit secrets.** `.env` and `data/` are gitignored. Keys go in `.env`.
@@ -79,12 +85,18 @@ produces trades immediately and makes every number after that worthless.
 ## Commands
 
 ```bash
-.venv\Scripts\python.exe -m pytest -q                    # 487 tests
+.venv\Scripts\python.exe -m pytest -q                    # 571 tests
 .venv\Scripts\python.exe -m ruff check src tests scripts
 .venv\Scripts\python.exe scripts\preflight.py            # provider health — run first
 .venv\Scripts\python.exe -m meme_flight_recorder.cli collect --paper-trade
+.venv\Scripts\python.exe -m meme_flight_recorder.cli scout --level level_3
+.venv\Scripts\python.exe -m meme_flight_recorder.cli scout --level level_3 --readiness
 .venv\Scripts\python.exe scripts\report_track_record.py  # record vs the evidence gate
 ```
+
+`scout` requires `--level`; there is no default, because the mandate does not
+permit assuming a missing value. Every parameter in `[scout.filters]` is likewise
+required, and omitting one stops the run rather than inventing a number.
 
 Do not lower `--delay`. Pacing is derived from the provider's published rate
 limit; halving it exhausted Jupiter's quota and every candidate then failed
@@ -113,6 +125,10 @@ closed on unknown route data.
 Foundation, measurement and analysis. Do not add a gate, filter or signal without
 the study that measures it. Do not wire an unproven filter into sizing or entry.
 
-Third-party trading bots, MCP servers and repos are untrusted until inspected;
-several were evaluated and rejected this way (see STATUS.md). Nothing that
+Third-party trading bots, MCP servers and repos are untrusted until inspected.
+Every evaluation is recorded in `docs/third-party-audit.md`, which also carries
+the inspection protocol and the reason each candidate was rejected — re-deriving
+that reasoning per candidate is how the record was lost the first time. External
+code enters only by being pinned in `skills-lock.json` by source and content
+hash. Nothing that
 handles a private key gets imported.

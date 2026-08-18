@@ -85,6 +85,69 @@ deliberate: this project does not go looking for a more aggressive strategy afte
 a negative result. But it does mean the honest next question is narrow and cheap
 — see open work.
 
+## 2026-08-15: the scout is built, and it makes its first non-rejection
+
+`cli scout --level {1,2,3}` implements the operator's memecoin mandate — three
+strictness levels, a twelve-parameter questionnaire, a 48h age gate, a minimum
+volume floor, no re-entry, and a first-minute scam-pump filter — against the live
+launchpad feed, paper only. `docs/superpowers/specs/2026-08-15-memecoin-scout-design.md`
+is the spec.
+
+**The one structural change to the operator's design: the confluence count is
+computed, not produced by an LLM.** A model asked to count signals returns a
+number but not a reproducible one, and there would then be no way to tell whether
+a verdict changed because the market moved or because the model did. The agent
+ranks and explains; it cannot open a position.
+
+`confluence.py` resolves every mandate signal to PRESENT / ABSENT / **UNKNOWN**,
+and unknown never counts toward the threshold. Chart signals are expected UNKNOWN
+on this population and that is the design rather than a gap: 13 of 21 sampled
+tokens had fewer than 30 traded candles, so there is no consolidation range, no
+volume baseline and no VWAP to reclaim on a token minutes old. Confluence scores
+from evidence that exists at that age.
+
+**First live run, 20 candidates, all 20 reconciled:**
+
+| outcome | n | why |
+|---|---:|---|
+| reject | 16 | market-cap band |
+| reject | 8 | **first-minute vertical — the operator's scam-pump gate firing on real tokens** |
+| reject | 2 | confluence shortfall |
+| **watch** | **1** | cleared every gate; WATCH not ENTER because no level admits a lifecycle state |
+
+(Reasons overlap; a candidate can trip more than one.) That WATCH is the first
+candidate to clear every gate in this project's history. It is not a position:
+every `readiness_policy` ships empty, and widening one needs a study.
+
+**Two provider defects found by running it, both of the same family.**
+
+*Birdeye's quota is exhausted, and it says so with the wrong status code.* The
+first-candle gate needs 1m candles; every request returns **HTTP 400** with
+`{"message":"Compute units usage limit exceeded"}`. Even BONK fails. A 400 is more
+misleading than a 429 because the status invites you to blame your own parameters.
+The first version of the loop swallowed it and printed "resolved 0 of 25", which
+reads as *these tokens have no candles*. Failures are now counted and named, and
+the quota case is classified by reading the response body — `str(HTTPError)` is
+only "Bad Request".
+
+*The fix was a second source, not a relaxed gate.* `_first_traded_candle` tries
+Birdeye by mint, then falls back to CoinGecko — which is keyed by **pool**, so the
+mint resolves through DexScreener first. Passing a mint where a pool is expected
+returns 404, the same defect that silently removed 12 of 22 tokens from a backtest
+the same day. With the fallback, 20 of 20 mints resolved.
+
+**And one crash that only real data produces.** Meme symbols routinely contain
+emoji and non-Latin scripts; the Windows console encodes as cp1252, so printing
+one raises `UnicodeEncodeError` and kills a scan mid-run. Symbols are sanitised
+before display now.
+
+Also recorded: the video workflow that prompted this was audited node by node
+against measurements already in this repo, and its headline strategy — `2x TP /
+−50% SL` — is already in this project's data as the **best of nine** exit policies
+at −0.0018 growth/trade. Its `max 2% portfolio risk` agrees with the sizing
+derived here independently. Third-party repos audited in
+`docs/third-party-audit.md`.
+
 ## 2026-08-15: position size is a cost decision before it is a risk decision
 
 Measured while running the five previously-uncommitted backtests. The round trip
