@@ -85,6 +85,58 @@ deliberate: this project does not go looking for a more aggressive strategy afte
 a negative result. But it does mean the honest next question is narrow and cheap
 — see open work.
 
+## 2026-08-15: position size is a cost decision before it is a risk decision
+
+Measured while running the five previously-uncommitted backtests. The round trip
+from `costs.round_trip_cost` at the configured cost model:
+
+| position | round trip | % of position | breakeven multiple |
+|---|---:|---:|---:|
+| $0.50 | $0.0390 | **7.80%** | 1.0780 |
+| $0.80 | $0.0435 | 5.44% | 1.0544 |
+| $1.00 | $0.0465 | 4.65% | 1.0465 |
+| $4.00 | $0.0915 | 2.29% | 1.0229 |
+| $10.00 | $0.1815 | **1.81%** | 1.0182 |
+| $40.00 | $0.6315 | 1.58% | 1.0158 |
+
+**The same 53 trades, same entries, only the size changed:**
+
+| position | win rate | profit factor | avg trade |
+|---|---:|---:|---:|
+| $0.80 | 11.3% | **0.138** | −$0.0410 |
+| $10.00 | 17.0% | **0.476** | −$0.1497 |
+
+Profit factor improves **3.5x** on cost efficiency alone. At $0.80 an 8% stop
+costs about 16% round trip inclusive, so the strategy is not merely unprofitable
+there, it is structurally unviable: a trade must move +5.44% to return the stake.
+
+**And this is the tension that defines the account.** The two constraints point in
+opposite directions:
+
+- **Cost efficiency wants size.** Below ~$2 the fixed fee dominates and every
+  strategy pays a tax that no win rate overcomes.
+- **Ruin wants smallness.** At the operator's stated $50 balance, $10 is **20% per
+  position and caps the book at 5 concurrent**. The measured total-loss rate is 2
+  of 9, and a replayed collapse fell ~1700x below its stop inside one candle, so a
+  stop cannot be assumed to bound the loss.
+
+**Risk-based sizing hides the conflict rather than resolving it.** $10 with an 8%
+stop is $0.80 at risk, which is 1.6% of a $50 account — within the growth-optimal
+band, and the two numbers agree *provided the stop holds*. On this population it
+demonstrably does not, and when it gaps the risk is the whole position, i.e. 20%.
+
+There is also a shot-count cost. Capturing a tail of p≈5.8% needs roughly `3/p` ≈
+50 attempts; $10 positions on $50 buy **5** concurrent, against 50 at $1.00. So
+the size that makes each trade cost-viable is also the size that makes the tail
+unreachable, and vice versa.
+
+**Operating decision, 2026-08-15: the operator has set $10 per trade and $50
+equity.** Both are recorded in `.env` and the scout defaults to them. The
+constraint above is not resolved by that choice, it is chosen — sizing for cost
+efficiency and accepting 5 shots rather than 50. Journal every trade so the
+realised stop slippage and the actual total-loss rate can be compared against the
+2-of-9 figure this warning rests on.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:
