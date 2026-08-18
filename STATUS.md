@@ -93,9 +93,18 @@ in order:
 1. **Run the collector to accumulate a forward record.** The evidence gate reads
    0 of 30 trades and cannot move until it does.
    `cli collect --source all --limit 40 --paper-trade --position-usd 10.0`
-   A cycle takes ~13 minutes. The collector currently produces **11-12 ELIGIBLE
-   per cycle** — recall is no longer zero, because the keyed Jupiter quota
-   restored route and impact evidence.
+
+   **Run it unattended — `run_collector.bat` exists for exactly this.** A
+   bounded foreground run will not finish a cycle: `--limit 40` with
+   `--source all` polls **120 candidates** (40 per source), and at the derived
+   2s pacing plus per-candidate enrichment one cycle exceeds 15 minutes. A
+   15-minute attempt on 2026-08-15 completed **zero** cycles and opened zero
+   positions — not a failure of the gates, just a run too short to finish one
+   pass. Plan in hours.
+
+   Without `--paper-trade` the collector does complete cycles at ~13 minutes and
+   currently produces **11-12 ELIGIBLE per cycle** — recall is no longer zero,
+   because the keyed Jupiter quota restored route and impact evidence.
 2. **Fix `liquidity_unknown`.** It is the top rejection reason on every single
    cycle at 66-78 per cycle, roughly half of everything observed. It is *missing
    data*, not a judgement about any token — the same class of failure that
