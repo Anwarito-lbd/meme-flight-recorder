@@ -289,8 +289,16 @@ def build() -> list[Subsystem]:
     add(25, "Creator/deployer intelligence", "PASS", implementation=["src/meme_flight_recorder/deployer.py", "src/meme_flight_recorder/deployer_history.py"],
         test=["tests/test_deployer.py"], real_data_proof="871 mints: dev sold >=50% died 7%, dev sold nothing died 28%",
         provider="helius", can_affect_paper_entry=True, known_failure_mode="gate was inverted for weeks; now a band")
-    add(26, "First-buyer intelligence", "NOT_IMPLEMENTED", implementation=[], test=[],
-        known_failure_mode="not built; requires per-transaction buyer ordering from subsystem 2")
+    add(26, "First-buyer intelligence", "DEGRADED",
+        implementation=["src/meme_flight_recorder/first_buyers.py"],
+        test=["tests/test_first_buyers.py"],
+        real_data_proof="extractor and nine independent features built and tested; NO measured value -- "
+                        "the study's sample was voided for selection on outcome",
+        provider="helius", can_affect_paper_entry=False,
+        known_failure_mode="the first sample ordered its queue by candle_count desc, so it processed "
+                           "survivors first and reported 0.0% death against a 60-64% base rate. Ordering "
+                           "is now on a hash of the mint address and the sample was cleared, not repaired. "
+                           "Nothing here may inform entry until a fresh sample is collected")
     add(27, "Liquidity analysis", "PASS", implementation=["src/meme_flight_recorder/providers/dexscreener.py", "src/meme_flight_recorder/risk.py"],
         test=["tests/test_risk.py"], real_data_proof=dex_detail, last_success=e2e_when, provider="dexscreener",
         fallback="geckoterminal", hot_path=True, can_affect_paper_entry=True,
@@ -464,8 +472,41 @@ def build() -> list[Subsystem]:
     return rows
 
 
+def unclaimed_modules(rows: list[Subsystem]) -> list[str]:
+    """Modules on disk that no subsystem row claims as its implementation.
+
+    This guard exists because the matrix's docstring promises status comes from
+    evidence "rather than memory", and one row broke that promise in the
+    direction nobody checks for. `first_buyers.py` shipped with tests, while row
+    26 still read NOT_IMPLEMENTED with an empty implementation list -- so
+    nothing cross-referenced it and the matrix understated the system for days.
+
+    PASS being hard to type by accident is only half the property. A status that
+    is *stale* is equally a claim from memory, so the tree is diffed against the
+    rows: any module no row mentions is reported, and the script exits non-zero
+    rather than emitting a matrix that quietly omits code that exists.
+    """
+    claimed: set[str] = set()
+    for row in rows:
+        for path in row.implementation:
+            claimed.add(Path(path).name)
+    on_disk = {
+        path.name
+        for path in SRC.glob("*.py")
+        if path.name != "__init__.py"
+    }
+    on_disk |= {
+        f"{path.parent.name}/{path.name}"
+        for path in (SRC / "providers").glob("*.py")
+        if path.name != "__init__.py"
+    }
+    # Provider modules are claimed by basename, so compare on basename throughout.
+    return sorted(name for name in {Path(n).name for n in on_disk} if name not in claimed)
+
+
 def main() -> int:
     rows = build()
+    orphans = unclaimed_modules(rows)
     ARTIFACTS.mkdir(exist_ok=True)
     generated = datetime.now(UTC).isoformat()
 
@@ -516,11 +557,35 @@ def main() -> int:
             f"- known failure mode: {row.known_failure_mode or 'none recorded'}",
             "",
         ]
+    # Coverage gaps go into the artifact, not only the console. A gap that is
+    # only ever printed is a gap that gets forgotten between runs.
+    lines += [
+        "## Coverage gaps",
+        "",
+        "Modules present in `src/meme_flight_recorder/` that no row above claims as",
+        "its implementation. Their subsystems may well work; what is missing is the",
+        "attribution, and an unattributed module means this document's status is a",
+        "claim from memory rather than from the tree.",
+        "",
+    ]
+    if orphans:
+        lines += [f"- `{name}`" for name in orphans]
+    else:
+        lines.append("None. Every module is claimed by a subsystem row.")
+    lines.append("")
+
     (ARTIFACTS / "SYSTEM_MATRIX.md").write_text("\n".join(lines), encoding="utf-8")
 
     print(f"generated {len(rows)} subsystems")
     for status, count in sorted(counts.items()):
         print(f"  {status:<18}{count}")
+
+    if orphans:
+        print(f"\n{len(orphans)} module(s) on disk claimed by no subsystem row:")
+        for name in orphans:
+            print(f"  {name}")
+        print("Each is recorded in the matrix under 'Coverage gaps'. Attributing them")
+        print("to a row is what makes this document an audit rather than a summary.")
     return 0
 
 
