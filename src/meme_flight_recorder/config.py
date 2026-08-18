@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -310,6 +310,73 @@ class ExitLimits:
 
 
 @dataclass(frozen=True)
+class ScoutFilters:
+    """The operator's parameter questionnaire, as computed thresholds.
+
+    **No field has a default.** The mandate says "you are not permitted to assume
+    missing values", and a dataclass default is exactly such an assumption -- it
+    would let a config file omit the daily loss cap and have the scout invent one.
+    Omitting any key is therefore a `TypeError` at load, which is the intended
+    behaviour: the run stops instead of proceeding on a number nobody chose.
+    """
+
+    maximum_token_age_hours: float
+    minimum_volume_usd: float
+    minimum_liquidity_usd: float
+    minimum_market_cap_usd: float
+    maximum_market_cap_usd: float
+    maximum_spread_pct: float
+    slippage_tolerance_pct: float
+    maximum_daily_loss_usd: float
+    trade_duration: str
+    universe: str
+    forbid_reentry: bool
+    maximum_first_candle_multiple: float
+
+    def __post_init__(self) -> None:
+        if self.minimum_market_cap_usd > self.maximum_market_cap_usd:
+            raise ValueError("minimum_market_cap_usd exceeds maximum_market_cap_usd")
+        if self.universe not in {"pre_bond", "bonded", "both"}:
+            raise ValueError(f"universe must be pre_bond, bonded or both; got {self.universe!r}")
+        if self.trade_duration not in {"ultra_scalp", "intraday", "rotation"}:
+            raise ValueError(f"unknown trade_duration {self.trade_duration!r}")
+        if self.maximum_daily_loss_usd <= 0:
+            raise ValueError("maximum_daily_loss_usd must be positive")
+
+
+@dataclass(frozen=True)
+class StrictnessLevel:
+    """One of the mandate's three levels.
+
+    `readiness_policy` is the tuple that decides which lifecycle states may reach
+    entry, and it defaults to empty on purpose. An empty tuple admits nothing, so
+    a level scans and journals but cannot open a position until its study passes
+    and the tuple is widened on evidence. Widening it is the single visible act
+    that turns research into trading.
+    """
+
+    minimum_confluence_signals: int
+    minimum_volume_expansion: float
+    maximum_trades_per_session: int
+    consecutive_loss_stop: int
+    risk_pct_of_equity: float
+    readiness_policy: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.minimum_confluence_signals < 1:
+            raise ValueError("minimum_confluence_signals must be at least 1")
+        if self.maximum_trades_per_session < 1:
+            raise ValueError("maximum_trades_per_session must be at least 1")
+        if self.risk_pct_of_equity <= 0:
+            raise ValueError("risk_pct_of_equity must be positive")
+
+    @property
+    def admits_entry(self) -> bool:
+        """Whether this level may open a position at all."""
+        return bool(self.readiness_policy)
+
+
+@dataclass(frozen=True)
 class Settings:
     execution_mode: str
     database_path: Path
@@ -324,6 +391,23 @@ class Settings:
     deployer: DeployerLimits = DeployerLimits()
     cohort: CohortLimits = CohortLimits()
     costs: CostModel = CostModel()
+    # Both default to None rather than to a populated object. A config without a
+    # [scout.filters] block cannot run the scout, and that is correct -- the
+    # alternative is a scout running on invented parameters.
+    scout: ScoutFilters | None = None
+    strictness: dict[str, StrictnessLevel] = field(default_factory=dict)
+
+    def level(self, name: str) -> StrictnessLevel:
+        """The named strictness level, or a clear error naming what is available.
+
+        The mandate says the agent must ask for a level and never assume one, so
+        there is deliberately no default level and no fallback to the loosest.
+        """
+        try:
+            return self.strictness[name]
+        except KeyError:
+            available = ", ".join(sorted(self.strictness)) or "none configured"
+            raise KeyError(f"unknown strictness level {name!r}; available: {available}") from None
 
     def __post_init__(self) -> None:
         if self.execution_mode != "paper":
@@ -366,4 +450,21 @@ def load_settings(path: str | Path | None = None) -> Settings:
         deployer=DeployerLimits(**data["safety"].get("deployer", {})),
         cohort=CohortLimits(**data["safety"].get("cohort", {})),
         costs=CostModel(**data.get("costs", {})),
+        # A missing [scout.filters] leaves this None, so the scout refuses to run
+        # rather than defaulting. A present but incomplete block raises, because
+        # ScoutFilters has no defaults.
+        scout=(
+            ScoutFilters(**data["scout"]["filters"])
+            if "scout" in data and "filters" in data["scout"]
+            else None
+        ),
+        strictness={
+            name: StrictnessLevel(
+                **{
+                    key: (tuple(value) if key == "readiness_policy" else value)
+                    for key, value in block.items()
+                }
+            )
+            for name, block in data.get("strictness", {}).items()
+        },
     )

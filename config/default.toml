@@ -90,3 +90,141 @@ maximum_round_trip_cost_pct = 8.0
 maximum_pool_share_pct = 0.5
 minimum_pool_liquidity_usd = 5000.0
 maximum_aggregate_open_position_pct = 50.0
+
+# --------------------------------------------------------------------------
+# The memecoin scout: the operator's execution mandate, as computed thresholds.
+#
+# Every value here comes from one of two places, and the comment says which:
+# the operator's mandate, or a measurement in STATUS.md. A number without a
+# justification is a future defect.
+#
+# `scout` refuses to run when any value in [scout.filters] is missing. The
+# mandate's "you are not permitted to assume missing values" is implemented
+# rather than instructed, so a forgotten parameter stops the run instead of
+# silently taking a default.
+# --------------------------------------------------------------------------
+
+[scout.filters]
+# Mandate: "Maximum 48 hours (2 days) old from initial deployment."
+#
+# MEASURED NON-BINDING on the population this project observes. Over 18,942
+# mints the rejected cohort's p90 age is 7.2 minutes, so a 48-hour cap admits
+# 100% of what the feeds return and filters nothing. Age also fails to separate
+# outcomes in either direction: the 10x winners are *younger* at observation
+# (p50 2.61 min) than the deaths (p50 4.06 min).
+#
+# Kept because the operator asked that no parameter be deleted, and because the
+# intent is coherent -- it is an upper bound holding entries inside the
+# high-volume launch window, and it would bind if the feed ever widened past
+# launchpad tokens. Journalled with every decision so its non-bindingness stays
+# visible rather than being rediscovered.
+maximum_token_age_hours = 48.0
+
+# Mandate, added in a later revision: "any token without volume means no one is
+# buying". New as an absolute floor -- volume previously entered only as a
+# *ratio* inside detect_breakout, which says nothing about absolute activity.
+minimum_volume_usd = 5000.0
+
+# Absolute backstop only. Whether an order is too large for this pool is a
+# position-size question enforced by [risk.micro].maximum_pool_share_pct.
+minimum_liquidity_usd = 5000.0
+
+# Mandate: "Minimum and maximum market cap range."
+#
+# Journalled ALONGSIDE pool depth, never instead of it. Market capitalisation is
+# not exit liquidity: the video workflow this mandate came from filtered on
+# mcap > $50k, and the ~$50k *liquidity* filter was withdrawn at n=166 when
+# deleting a single 209.7x token flipped growth negative at every position size.
+# Size against pool depth and quoted impact; mcap is context.
+minimum_market_cap_usd = 20000.0
+maximum_market_cap_usd = 5000000.0
+
+# Mandate: "Maximum acceptable spread" and "Slippage tolerance". Both are
+# checked against a real Jupiter route quote, never estimated from pool depth
+# via constant-product maths -- that was deliberately not built, because it
+# would substitute an estimate for a quote inside a gate whose purpose is
+# verifying a real executable route.
+maximum_spread_pct = 2.0
+slippage_tolerance_pct = 2.0
+
+# Mandate: "Maximum daily loss cap". At $50 equity and $10 positions this is
+# two full losses if stops hold, or one if a stop gaps.
+maximum_daily_loss_usd = 10.0
+
+# Mandate: "Preferred trade duration (ultra-scalp / intraday / rotation)".
+trade_duration = "intraday"
+
+# Mandate: "Pre-bond / bonded / both".
+universe = "both"
+
+# Mandate: no re-entry. "This way he can't enter a farm token that keeps
+# pumping, dumping and pumping again to attract ppl." A structural mechanism
+# rather than a single case, which is the bar for encoding a rule -- but it is a
+# RISK filter, so scripts/study_reentry_value.py judges it on death rate before
+# it may inform anything beyond rejection.
+forbid_reentry = true
+
+# Mandate: the first-minute scam-pump filter. "its first 1m candle all the way
+# to $1.8m mcap which was an obvious scam pump token". Reject when the first
+# traded minute spans more than this multiple of its own open -- a token that
+# goes vertical on minute one has no organic accumulation behind it.
+#
+# Computed from trades_only candles, so a carried-forward zero-volume bar can
+# neither fake nor mask it. Missing first-candle data yields UNKNOWN, which
+# cannot pass. Judged on death rate by scripts/study_first_candle_pump.py.
+maximum_first_candle_multiple = 3.0
+
+# --------------------------------------------------------------------------
+# Strictness levels. The operator switches between them; the scout refuses to
+# run without one. These tuples are the single visible act that turns research
+# into trading: MonitorConfig.readiness_policy admits no lifecycle state by
+# default, and widening it needs a study. So a level reaches entry only when its
+# study passes; until then it scans and journals.
+# --------------------------------------------------------------------------
+
+[strictness.level_1]
+# Mandate Level 1, CONSERVATIVE: "Minimum 4 confluence signals", volume
+# expansion >= 3x, "Maximum 2 trades per session", "Stop after 1 consecutive
+# loss".
+#
+# COLLISION, recorded rather than resolved: capturing a tail of p~5.8% needs
+# about 3/p ~ 50 attempts, and a 2-trade cap makes reaching it structurally
+# impossible. Level 1 is therefore a capital-preservation mode, not an
+# edge-capture mode. That is a coherent thing to want; it is not a way to make
+# money on a fat-tailed distribution.
+minimum_confluence_signals = 4
+minimum_volume_expansion = 3.0
+maximum_trades_per_session = 2
+consecutive_loss_stop = 1
+risk_pct_of_equity = 1.0
+readiness_policy = []
+
+[strictness.level_2]
+# Mandate Level 2, BALANCED: 3 signals, >= 2x volume expansion, 3 trades,
+# stop after 2 consecutive losses.
+minimum_confluence_signals = 3
+minimum_volume_expansion = 2.0
+maximum_trades_per_session = 3
+consecutive_loss_stop = 2
+risk_pct_of_equity = 1.6
+readiness_policy = []
+
+[strictness.level_3]
+# Mandate Level 3, AGGRESSIVE: 2 momentum confirmations, clear volume spike,
+# up to 5 trades, stop after 3 consecutive losses.
+#
+# 5 trades at $10 is the whole $50 book, so this level is fully invested after
+# five entries and cannot open a sixth. That is the shot-count ceiling the
+# sizing decision bought.
+minimum_confluence_signals = 2
+minimum_volume_expansion = 1.5
+maximum_trades_per_session = 5
+consecutive_loss_stop = 3
+risk_pct_of_equity = 2.0
+readiness_policy = []
+
+# Every readiness_policy above is deliberately EMPTY. An empty tuple admits no
+# lifecycle state, so no level can open a position until its study passes and
+# the tuple is widened on evidence. This is the fail-closed default that keeps
+# an unproven level out of the entry path, and it is the one line to change when
+# a study returns PROVEN.
