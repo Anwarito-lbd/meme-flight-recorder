@@ -116,6 +116,14 @@ def main() -> int:
         help="Skip Birdeye first-candle resolution. The gate then reports UNKNOWN and blocks.",
     )
     scout.add_argument(
+        "--alert",
+        action="store_true",
+        help=(
+            "Send non-rejected decisions to Telegram. Off by default; needs "
+            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env."
+        ),
+    )
+    scout.add_argument(
         "--dry-run",
         action="store_true",
         help="Evaluate and print without appending to the journal.",
@@ -167,6 +175,8 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     shipped `readiness_policy` is empty and widening one requires a study.
     """
     from .confluence import ConfluenceEvidence
+    from .notify import configured as telegram_configured
+    from .notify import format_decision, send
     from .providers.binance_web3 import BinanceWeb3Provider
     from .providers.birdeye import BirdeyeProvider
     from .providers.coingecko import CoinGeckoProvider
@@ -252,6 +262,7 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
 
     verdicts: dict[str, int] = {}
     reasons: dict[str, int] = {}
+    alerts: dict[str, int] = {}
     for row in rows:
         age_hours = None if row.age_minutes is None else row.age_minutes / 60.0
         first_candle = first_candles.get(row.contract_address, (None, None, None))
@@ -288,6 +299,29 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
                 f"/{level.minimum_confluence_signals}"
                 f" ({decision.confluence.unknown_count} unknown)"
             )
+            if args.alert:
+                # Only non-rejections are sent. An alert per rejection would be
+                # 19 messages out of 20 and would train the reader to ignore all
+                # of them, which is worse than not alerting at all.
+                delivery = send(
+                    format_decision(
+                        row.symbol,
+                        row.contract_address,
+                        decision.verdict.value,
+                        decision.confluence.present_count,
+                        level.minimum_confluence_signals,
+                        decision.confluence.unknown_count,
+                        args.level,
+                        decision.reasons,
+                    ),
+                    enabled=True,
+                )
+                alerts[delivery.state.value] = alerts.get(delivery.state.value, 0) + 1
+                if not delivery.delivered:
+                    # A dropped alert is reported, never swallowed: silence about
+                    # it is how an operator concludes the market was quiet when
+                    # the network was.
+                    print(f"    alert {delivery.state.value}: {delivery.detail}")
 
     print("\n=== verdict reconciliation ===")
     for verdict, count in sorted(verdicts.items()):
@@ -299,6 +333,12 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     print("\n=== blocking reasons ===")
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
         print(f"  {reason:<48}{count:>5}")
+    if alerts:
+        print("\n=== alerts ===")
+        for state, count in sorted(alerts.items()):
+            print(f"  {state:<28}{count:>5}")
+    elif args.alert and not telegram_configured():
+        print("\n--alert requested but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are absent.")
     if args.dry_run:
         print("\nDry run: nothing was journalled.")
     return 0
