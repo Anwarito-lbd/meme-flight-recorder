@@ -169,6 +169,8 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     from .confluence import ConfluenceEvidence
     from .providers.binance_web3 import BinanceWeb3Provider
     from .providers.birdeye import BirdeyeProvider
+    from .providers.coingecko import CoinGeckoProvider
+    from .providers.dexscreener import DexScreenerProvider
     from .scout import CandidateEvidence, ScoutVerdict, evaluate, held_mints, journal_decision
 
     if settings.scout is None:
@@ -215,71 +217,35 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     # relaxing produces trades immediately and makes every number after it
     # worthless.
     birdeye = BirdeyeProvider()
+    coingecko = CoinGeckoProvider()
+    dexscreener = DexScreenerProvider()
     first_candles: dict[str, tuple[float | None, float | None, float | None]] = {}
-    # Why every failure is counted and named rather than swallowed. The first
-    # version of this loop ended in a bare `except: continue` and reported
-    # "resolved 0 of 25", which reads as "these tokens have no candles". The real
-    # cause was the provider answering HTTP 400 with
-    # {"message":"Compute units usage limit exceeded"} -- an exhausted quota
-    # wearing a bad-request status code, which is worse than a 429 because the
-    # status invites you to blame your own parameters. A budget failure is not
-    # evidence about a token.
-    resolve_failures: dict[str, int] = {}
-    if birdeye.configured and not args.no_first_candle:
-        print(f"\nresolving first traded minute for {len(rows)} mints via Birdeye...")
+    # Every failure is counted and named rather than swallowed. The first version
+    # of this loop ended in a bare `except: continue` and printed "resolved 0 of
+    # 25", which reads as "these tokens have no candles". The real cause was
+    # Birdeye answering HTTP 400 with {"message":"Compute units usage limit
+    # exceeded"} -- an exhausted quota wearing a bad-request status code, which is
+    # worse than a 429 because the status invites you to blame your parameters.
+    # A budget failure is not evidence about a token.
+    sources: dict[str, int] = {}
+    if not args.no_first_candle:
+        print(f"\nresolving first traded minute for {len(rows)} mints...")
         for row in rows:
-            created = row.created_at
-            if created is None:
-                resolve_failures["no_created_at"] = resolve_failures.get("no_created_at", 0) + 1
-                continue
-            start = int(created.timestamp())
-            try:
-                series = birdeye.candles(row.contract_address, start - 60, start + 1800, "1m")
-            except Exception as error:  # noqa: BLE001 - named, counted, never silent
-                # `str(HTTPError)` is only "HTTP Error 400: Bad Request"; the
-                # actual cause lives in the response body, which is where Birdeye
-                # puts "Compute units usage limit exceeded". Reading it is the
-                # difference between "quota exhausted" and "malformed request",
-                # and those call for opposite responses.
-                body = ""
-                reader = getattr(error, "read", None)
-                if callable(reader):
-                    try:
-                        body = reader().decode("utf-8", "replace")
-                    except Exception:  # noqa: BLE001 - body is best effort
-                        body = ""
-                text = f"{error} {body}"
-                key = (
-                    "quota_exhausted"
-                    if "Compute units" in text or "usage limit" in text
-                    else type(error).__name__
-                )
-                resolve_failures[key] = resolve_failures.get(key, 0) + 1
-                continue
-            if series is None:
-                resolve_failures["no_series"] = resolve_failures.get("no_series", 0) + 1
-                continue
-            traded = series.trades_only
-            if not traded:
-                # Candles exist but none carry volume, so there is no first
-                # *traded* minute to measure. Stays UNKNOWN rather than passing.
-                resolve_failures["no_traded_candle"] = (
-                    resolve_failures.get("no_traded_candle", 0) + 1
-                )
-                continue
-            first = traded[0]
-            first_candles[row.contract_address] = (first.open, first.high, first.volume)
-        print(f"resolved {len(first_candles)} of {len(rows)}")
-        for reason, count in sorted(resolve_failures.items(), key=lambda kv: -kv[1]):
-            print(f"  unresolved: {reason:<24}{count:>5}")
-        if resolve_failures.get("quota_exhausted"):
-            print(
-                "  NOTE: the Birdeye quota is exhausted, so the first-candle gate is\n"
-                "  UNKNOWN for provider reasons, not because these tokens went vertical.\n"
-                "  Every candidate will block. This is the gate working, not a result."
+            candle, source = _first_traded_candle(
+                row.contract_address, row.created_at, birdeye, coingecko, dexscreener
             )
-    elif not birdeye.configured:
-        print("\nBIRDEYE_API_KEY absent: first-candle gate will report UNKNOWN and block.")
+            sources[source] = sources.get(source, 0) + 1
+            if candle is not None:
+                first_candles[row.contract_address] = candle
+        print(f"resolved {len(first_candles)} of {len(rows)}")
+        for reason, count in sorted(sources.items(), key=lambda kv: -kv[1]):
+            print(f"  {reason:<26}{count:>5}")
+        if not first_candles:
+            print(
+                "  Nothing resolved, so the first-candle gate is UNKNOWN for"
+                " provider reasons and every candidate will block. That is the"
+                " gate working, not a result about these tokens."
+            )
 
     previously_held = held_mints(recorder)
     print(f"\n{len(rows)} candidates; {len(previously_held)} mints previously held\n")
@@ -317,7 +283,7 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
             journal_decision(recorder, decision, filters, level, evidence)
         if decision.verdict is not ScoutVerdict.REJECT:
             print(
-                f"  {decision.verdict.value.upper():<6} {row.symbol:<12}"
+                f"  {decision.verdict.value.upper():<6} {_safe(row.symbol):<12}"
                 f" confluence {decision.confluence.present_count}"
                 f"/{level.minimum_confluence_signals}"
                 f" ({decision.confluence.unknown_count} unknown)"
@@ -336,6 +302,86 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     if args.dry_run:
         print("\nDry run: nothing was journalled.")
     return 0
+
+
+def _safe(text: str, width: int = 12) -> str:
+    """Console-safe token symbol.
+
+    Meme-coin symbols routinely contain emoji and non-Latin scripts, and the
+    Windows console encodes as cp1252 -- printing one raises UnicodeEncodeError
+    and takes the whole run down mid-scan. Found by running the live feed: a
+    symbol two characters long killed a resolution loop that had already worked.
+    Truncation is applied after encoding so a replaced character still counts.
+    """
+    cleaned = text.encode("ascii", "replace").decode("ascii")
+    return cleaned[:width]
+
+
+def _first_traded_candle(
+    mint: str,
+    created_at: Any,
+    birdeye: Any,
+    coingecko: Any,
+    dexscreener: Any,
+) -> tuple[tuple[float | None, float | None, float | None] | None, str]:
+    """The first minute anyone actually traded, and how it was obtained.
+
+    Two sources, tried in order, because one of them is a budget that runs out.
+    Birdeye is keyed by mint and is the cheaper call; CoinGecko is keyed by
+    **pool**, so the mint has to be resolved through DexScreener first -- passing
+    a mint where a pool is expected returns HTTP 404, which is the defect that
+    silently removed 12 of 22 tokens from a backtest earlier today.
+
+    Returns `(None, reason)` when neither source can answer. That is UNKNOWN, and
+    UNKNOWN blocks: a token whose first minute cannot be seen has not been shown
+    to be calm.
+    """
+    if created_at is None:
+        return None, "no_created_at"
+
+    start = int(created_at.timestamp())
+    if getattr(birdeye, "configured", False):
+        try:
+            series = birdeye.candles(mint, start - 60, start + 1800, "1m")
+        except Exception as error:  # noqa: BLE001 - classified below, never silent
+            body = ""
+            reader = getattr(error, "read", None)
+            if callable(reader):
+                try:
+                    body = reader().decode("utf-8", "replace")
+                except Exception:  # noqa: BLE001 - body is best effort
+                    body = ""
+            if "Compute units" in f"{error} {body}" or "usage limit" in f"{error} {body}":
+                pass  # quota exhausted; fall through to CoinGecko
+            else:
+                return None, f"birdeye_{type(error).__name__}"
+            series = None
+        if series is not None:
+            traded = series.trades_only
+            if traded:
+                first = traded[0]
+                return (first.open, first.high, first.volume), "birdeye"
+
+    pair = None
+    try:
+        pair = dexscreener.deepest_pair(mint)
+    except Exception:  # noqa: BLE001 - no pool means no fallback, reported as such
+        pair = None
+    if pair is None or not pair.pair_address:
+        return None, "no_quoted_pool"
+    try:
+        payload = coingecko.pool_ohlcv(
+            pair.pair_address, aggregate=1, limit=200, timeframe="minute"
+        )
+    except Exception as error:  # noqa: BLE001
+        return None, f"coingecko_{type(error).__name__}"
+    rows = ((payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    # A candle with no volume is not a price, whichever provider served it.
+    traded_rows = [row for row in rows if row[5]]
+    if not traded_rows:
+        return None, "no_traded_candle"
+    first = min(traded_rows, key=lambda row: row[0])
+    return (first[1], first[2], first[5]), "coingecko"
 
 
 def _buy_share_pct(buy_count: int | None, sell_count: int | None) -> float | None:
