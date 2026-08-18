@@ -85,6 +85,56 @@ deliberate: this project does not go looking for a more aggressive strategy afte
 a negative result. But it does mean the honest next question is narrow and cheap
 — see open work.
 
+## 2026-08-15: X's API is no longer priced out — the recorded claim was stale
+
+This file has said since early on that "X's API costs more per month than the
+account holds", and it justified never pursuing that feed. **That was true
+against a $200/month Basic floor and is no longer true.**
+
+As of 2026-02-06 X moved new developers to **pay-per-use with no monthly
+minimum**: **$0.005 per post read** (capped at 2M reads/month), $0.015 per post
+created. The free tier is discontinued; legacy Basic ($200/mo) and Pro
+($5,000/mo) are closed to new signups and being auto-migrated; Enterprise starts
+near $42,000/mo.
+
+What that costs at this account's size:
+
+| usage pattern | reads/month | cost/month |
+|---|---:|---:|
+| 20 posts x 2 candidates, hourly | ~28,800 | **~$144** |
+| 20 posts on post-gate survivors only (~1-2/day) | ~1,200 | **~$6** |
+| break-even against the whole account | **10,000** | **$50** |
+
+So the feed is reachable, but **only at post-gate volume**, and even then $6/month
+is 12% of capital. Ten thousand post reads costs the entire account. The rule
+that follows is the same one that governs the sentiment node: query X for
+candidates that already cleared the computed gates, never for the whole feed.
+
+No account was created and no credits were purchased — that is the operator's
+call. The claim in this file is corrected, not the decision.
+
+## 2026-08-15: sentiment is a swappable backend, defaulting to none
+
+`providers/news.py` classifies text about a token through `none`, `ollama`
+(local, free) or `anthropic` (hosted). The backend is swappable rather than
+chosen because **at $50 of capital the model bill is a capital-allocation
+decision, not a capability one**: classifying every candidate every cycle on a
+hosted model runs about $22/month, 44% of this account monthly, while the same
+work on a local 3B model costs nothing. Sentiment on a headline has no reasoning
+depth to lose, so the small model is not a compromise.
+
+Ollama is installed on this host and had **zero models pulled** at the time of
+writing, so a live trial correctly returned UNKNOWN. That is the fail-closed
+path working: an unreachable model is not a neutral reading.
+
+Three kinds of absence stay distinguishable, and none of them is neutral:
+`article_count is None` means the provider could not be reached, `0` means it
+looked and found nothing, and a tie or an unparseable answer is UNKNOWN with the
+count intact. Expect UNKNOWN to dominate regardless of backend — a token four
+minutes old has nothing written about it, which is why the hosted backend is
+deliberately left unimplemented until the free one shows the node is worth
+anything.
+
 ## 2026-08-15: the scout is built, and it makes its first non-rejection
 
 `cli scout --level {1,2,3}` implements the operator's memecoin mandate — three
@@ -299,7 +349,10 @@ reason to keep collecting until the answer is unambiguous.
   Jito tips; they are unreachable at this size.
 - **Public information only.** No leaked paid-group calls, hacked accounts or
   pre-announcement listings. Padre and Fomo sit behind logins, so their calls
-  arrive by manual CSV. X's API costs more per month than the account holds.
+  arrive by manual CSV. **X's API claim is corrected — see the 2026-08-15 entry
+  above.** It moved to pay-per-use with no monthly minimum ($0.005/post read),
+  so it is reachable at post-gate volume; 10,000 reads still costs the whole
+  account, so it must never be pointed at the full feed.
 - **Sub-second sniping is not available at this capital**, and the project's own
   research agrees: launch feeds are for observation and data collection, not
   immediate execution. The measured winners were not launch snipes — the CATE
