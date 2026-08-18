@@ -65,6 +65,7 @@ def enrich_snapshot(
     *,
     mint_provider: _MintProvider | None = None,
     quote_provider: _QuoteProvider | None = None,
+    security_provider: Any | None = None,
     intended_order_sol: float = 0.05,
     slippage_bps: int = 100,
 ) -> tuple[TokenSnapshot, EnrichmentReport]:
@@ -148,6 +149,7 @@ def enrich_snapshot(
                 if evidence.largest_accounts_error:
                     errors["largest_accounts"] = evidence.largest_accounts_error
             # The private concentration figure the gate has always meant. Owners
+
             # are resolved so the AMM vault can be subtracted; see
             # clusters.adjusted_top_holder_pct for why an incomplete exclusion
             # list is safe here and the gross number never was.
@@ -177,7 +179,35 @@ def enrich_snapshot(
             )
         )
 
+    if security_provider is not None and mint:
+        try:
+            sec = security_provider.token_security(mint)
+        except Exception as error:  # noqa: BLE001
+            errors["security_evidence"] = f"{type(error).__name__}: {error}"
+        else:
+            if sec is not None:
+                updates["raw_evidence"] = {
+                    **updates.get("raw_evidence", snapshot.raw_evidence),
+                    "goplus_security": sec.raw,
+                }
+                if sec.sellable is not None and updates.get("transaction_simulation_ok") is None:
+                    updates["transaction_simulation_ok"] = sec.sellable
+                    if "transaction_simulation_ok" in unresolved:
+                        unresolved.remove("transaction_simulation_ok")
+                    resolved.append("transaction_simulation_ok")
+                if sec.freezable is not None and updates.get("freeze_authority_disabled") is None:
+                    updates["freeze_authority_disabled"] = not sec.freezable
+                    if "freeze_authority_disabled" in unresolved:
+                        unresolved.remove("freeze_authority_disabled")
+                    resolved.append("freeze_authority_disabled")
+                if sec.mintable is not None and updates.get("mint_authority_disabled") is None:
+                    updates["mint_authority_disabled"] = not sec.mintable
+                    if "mint_authority_disabled" in unresolved:
+                        unresolved.remove("mint_authority_disabled")
+                    resolved.append("mint_authority_disabled")
+
     if quote_provider is not None and mint:
+
         amount = int(intended_order_sol * LAMPORTS_PER_SOL)
         try:
             entry, exit_route = quote_provider.round_trip_evidence(

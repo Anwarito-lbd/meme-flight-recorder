@@ -186,3 +186,13 @@ def test_assess_candidate_blocks_a_rejected_row() -> None:
         "stage": "migrated",
     }
     assert assess_candidate(row, PERMISSIVE).readiness is StrategyReadiness.BLOCK
+
+
+def test_trading_policy_admits_surviving_and_mature_tokens() -> None:
+    policy = ReadinessPolicy.trading_policy()
+    assert assess(SafetyVerdict.PASS, LifecycleState.SURVIVING, 45.0, policy).readiness is StrategyReadiness.ENTRY
+    assert assess(SafetyVerdict.PASS, LifecycleState.MATURE, 400.0, policy).readiness is StrategyReadiness.ENTRY
+    assert assess(SafetyVerdict.PASS, LifecycleState.ESTABLISHED, 2_000.0, policy).readiness is StrategyReadiness.ENTRY
+    assert assess(SafetyVerdict.PASS, LifecycleState.GRADUATED, 10.0, policy).readiness is StrategyReadiness.ENTRY
+    assert assess(SafetyVerdict.PASS, LifecycleState.NEW, 1.0, policy).readiness is StrategyReadiness.WATCH
+

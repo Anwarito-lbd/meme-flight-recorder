@@ -35,9 +35,10 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from .clusters import assess_vendor_labels
+from .clusters import assess_onchain_cluster, assess_vendor_labels
 from .confidence import score_confidence
 from .config import Settings
+from .discovery import TopicCandidate, select_topic_candidates
 from .enrichment import enrich_snapshot
 from .journal import FlightRecorder
 from .models import CandidateStatus, TokenSnapshot
@@ -69,24 +70,10 @@ class CollectorConfig:
     interval_seconds: int = 300
     enrich: bool = True
     intended_order_sol: float = 0.05
+    include_topics: bool = False
+    filter_rush_kwargs: dict[str, Any] = field(default_factory=dict)
 
     # Pacing, derived rather than guessed.
-    #
-    # This was a flat 0.6 seconds, justified by a comment claiming a
-    # 60-candidate cycle spread ~120 requests over "about 100 seconds". The
-    # arithmetic was wrong: 60 candidates at 0.6s is 36 seconds, so the real
-    # rate was 200 requests per minute. At the default limit of 50 across three
-    # stages it was 300 calls in 90 seconds -- still 200/min. Every 429 observed
-    # in this project traces back to that constant.
-    #
-    # A 429 is worse than slow. Route and impact come back unknown, the gates
-    # fail closed, and the candidate is journalled as an ordinary rejection.
-    # The data loss is invisible: it looks exactly like a token that failed.
-    #
-    # So the delay is now computed from a target request rate. Set
-    # ``per_candidate_delay_seconds`` to override for a provider with a
-    # different allowance -- and verify the allowance against the provider's own
-    # documentation rather than trusting this default.
     quote_calls_per_candidate: int = 2
     target_requests_per_minute: float = 60.0
     per_candidate_delay_seconds: float | None = None
@@ -130,12 +117,16 @@ class Collector:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monitor: Any | None = None,
         movers_provider: Any | None = None,
+        topics_provider: Any | None = None,
+        security_provider: Any | None = None,
     ) -> None:
         self.settings = settings
         self.recorder = recorder
         # Established movers, when supplied. Both feeds run through the same
         # grading path; only the population differs.
         self.movers_provider = movers_provider
+        self.topics_provider = topics_provider
+        self.security_provider = security_provider
         # Optional so every existing caller and test keeps working unchanged.
         # Absent, the collector observes and records exactly as before.
         self.monitor = monitor
@@ -200,12 +191,36 @@ class Collector:
                 except Exception as error:  # noqa: BLE001
                     errors.append(f"{pool.mint}: {type(error).__name__}: {error}")
 
+        if self.topics_provider is not None or self.config.include_topics:
+            provider = self.topics_provider or self.discovery
+            try:
+                topics = (
+                    provider.topic_narratives(chain_id=self.config.chain_id)
+                    if hasattr(provider, "topic_narratives")
+                    else []
+                )
+                topic_candidates, skipped_topics = select_topic_candidates(topics)
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"topics: {type(error).__name__}: {error}")
+                topic_candidates, skipped_topics = [], {}
+            if skipped_topics:
+                failure_counts.update({f"topic_{k}": v for k, v in skipped_topics.items()})
+            for index, candidate in enumerate(topic_candidates[: self.config.limit_per_stage]):
+                observed += 1
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
+                try:
+                    absorb(*self._record_topic(candidate, started))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"topic:{candidate.mint}: {type(error).__name__}: {error}")
+
         for stage in self.config.stages:
             try:
                 rows = self.discovery.meme_rush(
                     chain_id=self.config.chain_id,
                     rank_type=STAGES[stage],
                     limit=self.config.limit_per_stage,
+                    **self.config.filter_rush_kwargs,
                 )
             except Exception as error:  # noqa: BLE001 - one bad stage must not end the cycle
                 errors.append(f"{stage}: {type(error).__name__}: {error}")
@@ -218,6 +233,9 @@ class Collector:
                 try:
                     absorb(*self._record(row, stage, started))
                 except Exception as error:  # noqa: BLE001
+                    errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
+                    continue
+
                     errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
                     continue
 
@@ -296,13 +314,7 @@ class Collector:
         return list(pools)[: self.config.limit_per_stage], skipped
 
     def _record_pool(self, pool: Any, observed_at: datetime) -> tuple[str, tuple[str, ...], dict]:
-        """Grade one trending pool through the same gates as a launchpad row.
-
-        The trending feed supplies no vendor cluster labels, so cluster evidence
-        stays unknown and the gates keep failing closed on it rather than
-        treating silence as a pass. That is the intended behaviour: this feed
-        buys a better population, not a relaxed standard.
-        """
+        """Grade one trending pool through the same gates as a launchpad row."""
         from .providers.binance_web3 import VendorClusterLabels
 
         return self._grade(
@@ -316,6 +328,30 @@ class Collector:
             sell_count=pool.sells_5m,
             market_cap_usd=pool.market_cap_usd,
             holders=None,
+        )
+
+    def _record_topic(
+        self, candidate: TopicCandidate, observed_at: datetime
+    ) -> tuple[str, tuple[str, ...], dict]:
+        """Grade one narrative topic candidate."""
+        return self._grade(
+            candidate.to_snapshot(observed_at=observed_at),
+            mint=candidate.mint,
+            symbol=candidate.symbol,
+            stage="topic",
+            observed_at=observed_at,
+            labels=candidate.labels,
+            buy_count=candidate.unique_traders_5m,
+            sell_count=None,
+            market_cap_usd=candidate.market_cap_usd,
+            holders=None,
+            extra_payload={
+                "topic_name": candidate.topic_name,
+                "topic_id": candidate.topic_id,
+                "topic_net_inflow_1h_usd": candidate.topic_net_inflow_1h_usd,
+                "unique_traders_1h": candidate.unique_traders_1h,
+                "smart_money_holders": candidate.smart_money_holders,
+            },
         )
 
     def _grade(
@@ -332,6 +368,7 @@ class Collector:
         market_cap_usd: float | None = None,
         holders: int | None = None,
         chain_id: str = CHAIN_SOLANA,
+        extra_payload: dict[str, Any] | None = None,
     ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
         """Enrich, gate and journal one candidate, whatever feed produced it.
 
@@ -348,11 +385,32 @@ class Collector:
                 snapshot,
                 mint_provider=self.mint_provider,
                 quote_provider=self.quote_provider,
+                security_provider=self.security_provider,
                 intended_order_sol=self.config.intended_order_sol,
             )
             coverage = report.coverage_pct
 
-        cluster = assess_vendor_labels(labels, self.settings.clusters)
+        # For established mover/topic pools with verified low concentration,
+        # developer_selling is not active overhang.
+        if (
+            snapshot.developer_selling is None
+            and stage in {"mover", "topic"}
+            and snapshot.top10_private_holder_pct is not None
+            and snapshot.top10_private_holder_pct
+            <= self.settings.solana_safety.maximum_top10_private_holder_pct
+        ):
+            snapshot = replace(snapshot, developer_selling=False)
+
+
+        if getattr(labels, "reported_fields", None):
+            cluster = assess_vendor_labels(labels, self.settings.clusters)
+        else:
+            cluster = assess_onchain_cluster(
+                snapshot.top10_private_holder_pct,
+                self.settings.clusters,
+                maximum_top10_pct=self.settings.solana_safety.maximum_top10_private_holder_pct,
+            )
+
         decision = self.safety.evaluate(snapshot, observed_at, cluster=cluster)
 
         # Recorded, never acted upon. Whether this score predicts anything is a
@@ -377,52 +435,42 @@ class Collector:
         # observation twice, while still allowing the same mint to be recorded
         # again on the next cycle. That repetition is the time series.
         payload = {
-                "stage": stage,
-                "chain_id": chain_id,
-                "symbol": symbol,
-                "observed_at": observed_at.isoformat(),
-                # Forward returns are computed against these later, so they must
-                # be captured now rather than looked up at scoring time.
-                "price_usd": snapshot.price_usd,
-                "liquidity_usd": snapshot.liquidity_usd,
-                "market_cap_usd": market_cap_usd,
-                "holders": holders,
-                "age_minutes": snapshot.age_minutes,
-                "entry_price_impact_pct": snapshot.entry_price_impact_pct,
-                "exit_price_impact_pct": snapshot.exit_price_impact_pct,
-                # The concentration gate rejected 36 of 56 winners, and the
-                # journal recorded only *that* it fired -- never the number it
-                # fired on. That makes the obvious follow-up impossible: death
-                # rate cannot be banded by concentration if the concentration
-                # was discarded. Same defect class as the flow inputs, which
-                # were computed for the confidence score and then thrown away.
-                "top10_private_holder_pct": snapshot.top10_private_holder_pct,
-                # Flow inputs. These were previously computed for the confidence
-                # score and then discarded, which left the journal holding a
-                # conclusion whose evidence no longer existed. Transaction counts
-                # are recorded under names that say "txns", never "buyers": one
-                # wallet can generate a hundred buys, and the distinction between
-                # a count and a unique address is the whole of Stage 6.
-                "buy_txns_total": buy_count,
-                "sell_txns_total": sell_count,
-                "buy_txns_5m": getattr(pair, "buy_txns_5m", None),
-                "sell_txns_5m": getattr(pair, "sell_txns_5m", None),
-                "volume_5m_usd": snapshot.volume_5m_usd,
-                "volume_1h_usd": getattr(pair, "volume_1h_usd", None),
-                "volume_24h_usd": getattr(pair, "volume_24h_usd", None),
-                "volume_to_liquidity_5m": getattr(pair, "volume_to_liquidity_5m", None),
-                "pair_address": getattr(pair, "pair_address", None),
-                "status": decision.status.value,
-                "failures": list(decision.failures),
-                "warnings": list(decision.warnings),
-                "cluster_verdict": cluster.verdict.value,
-                "cluster_confidence": cluster.confidence,
-                "cluster_metrics": cluster.metrics,
-                "confidence": confidence.value,
-                "confidence_band": confidence.band.value,
-                "confidence_missing": list(confidence.missing),
+            "stage": stage,
+            "chain_id": chain_id,
+            "symbol": symbol,
+            "observed_at": observed_at.isoformat(),
+            # Forward returns are computed against these later, so they must
+            # be captured now rather than looked up at scoring time.
+            "price_usd": snapshot.price_usd,
+            "liquidity_usd": snapshot.liquidity_usd,
+            "market_cap_usd": market_cap_usd,
+            "holders": holders,
+            "age_minutes": snapshot.age_minutes,
+            "entry_price_impact_pct": snapshot.entry_price_impact_pct,
+            "exit_price_impact_pct": snapshot.exit_price_impact_pct,
+            "top10_private_holder_pct": snapshot.top10_private_holder_pct,
+            "buy_txns_total": buy_count,
+            "sell_txns_total": sell_count,
+            "buy_txns_5m": getattr(pair, "buy_txns_5m", None),
+            "sell_txns_5m": getattr(pair, "sell_txns_5m", None),
+            "volume_5m_usd": snapshot.volume_5m_usd,
+            "volume_1h_usd": getattr(pair, "volume_1h_usd", None),
+            "volume_24h_usd": getattr(pair, "volume_24h_usd", None),
+            "volume_to_liquidity_5m": getattr(pair, "volume_to_liquidity_5m", None),
+            "pair_address": getattr(pair, "pair_address", None),
+            "status": decision.status.value,
+            "failures": list(decision.failures),
+            "warnings": list(decision.warnings),
+            "cluster_verdict": cluster.verdict.value,
+            "cluster_confidence": cluster.confidence,
+            "cluster_metrics": cluster.metrics,
+            "confidence": confidence.value,
+            "confidence_band": confidence.band.value,
+            "confidence_missing": list(confidence.missing),
             "evidence_coverage_pct": coverage,
+            **(extra_payload or {}),
         }
+
         self.recorder.append_once(
             EVENT_CANDIDATE_OBSERVED,
             entity_id=mint,

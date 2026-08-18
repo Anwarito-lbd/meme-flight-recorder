@@ -228,3 +228,190 @@ def select_movers(
             skipped[reason] = skipped.get(reason, 0) + 1
     accepted.sort(key=lambda pool: pool.volume_24h_usd or 0.0, reverse=True)
     return accepted, skipped
+
+
+@dataclass(frozen=True)
+class TopicCandidate:
+    """One candidate derived from an AI hot narrative topic."""
+
+    mint: str
+    symbol: str
+    name: str
+    topic_id: str
+    topic_name: str
+    topic_category: str | None = None
+    topic_net_inflow_usd: float | None = None
+    topic_net_inflow_1h_usd: float | None = None
+    token_net_inflow_usd: float | None = None
+    token_net_inflow_1h_usd: float | None = None
+    market_cap_usd: float | None = None
+    liquidity_usd: float | None = None
+    price_change_24h_pct: float | None = None
+    unique_traders_1h: int | None = None
+    unique_traders_5m: int | None = None
+    smart_money_holders: int | None = None
+    kol_holders: int | None = None
+    created_at: datetime | None = None
+    migrated: bool = False
+    labels: Any = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def age_minutes(self) -> float | None:
+        if self.created_at is None:
+            return None
+        return (datetime.now(UTC) - self.created_at).total_seconds() / 60
+
+    def to_snapshot(self, observed_at: datetime | None = None) -> TokenSnapshot:
+        from .deployer import developer_is_distributing
+
+        now = observed_at or datetime.now(UTC)
+        universe = Universe.SOLANA_EMERGING if self.migrated else Universe.SOLANA_LAUNCH
+        top10_pct = getattr(self.labels, "top10_pct", None) if self.labels else None
+        dev_sell_pct = getattr(self.labels, "dev_sell_pct", None) if self.labels else None
+        return TokenSnapshot(
+            identity=TokenIdentity(
+                chain="solana",
+                address=self.mint,
+                symbol=self.symbol,
+                name=self.name,
+                source_ids={"topic": self.topic_id, "binance_web3": self.mint},
+                verified=False,
+            ),
+            universe=universe,
+            observed_at=now,
+            provider_observed_at=self.created_at,
+            age_minutes=self.age_minutes,
+            price_usd=None,
+            liquidity_usd=self.liquidity_usd,
+            holder_count=None,
+            top10_private_holder_pct=top10_pct,
+            developer_selling=developer_is_distributing(dev_sell_pct),
+            price_momentum=self.price_change_24h_pct,
+            graduated=self.migrated,
+            raw_evidence={
+                "topic_candidate": self.raw,
+                "topic_name": self.topic_name,
+                "topic_net_inflow_1h_usd": self.topic_net_inflow_1h_usd,
+                "unique_traders_1h": self.unique_traders_1h,
+                "smart_money_holders": self.smart_money_holders,
+            },
+        )
+
+
+@dataclass(frozen=True)
+class TopicCandidateFilter:
+    """Pre-filter for narrative topic candidates."""
+
+    minimum_liquidity_usd: float = 5_000.0
+    minimum_topic_inflow_usd: float = 0.0
+    minimum_unique_traders_1h: int = 5
+    require_migrated: bool = False
+    filter_copycats: bool = True
+
+    def accepts(self, candidate: TopicCandidate) -> tuple[bool, str]:
+        if (
+            candidate.liquidity_usd is not None
+            and candidate.liquidity_usd < self.minimum_liquidity_usd
+        ):
+            return False, "liquidity_too_thin"
+        if (
+            candidate.topic_net_inflow_usd is not None
+            and candidate.topic_net_inflow_usd < self.minimum_topic_inflow_usd
+        ):
+            return False, "negative_topic_inflow"
+        if (
+            self.minimum_unique_traders_1h > 0
+            and candidate.unique_traders_1h is not None
+            and candidate.unique_traders_1h < self.minimum_unique_traders_1h
+        ):
+            return False, "insufficient_organic_traders"
+        if self.require_migrated and not candidate.migrated:
+            return False, "not_migrated"
+        return True, "accepted"
+
+
+def select_topic_candidates(
+    topics: list[Any],
+    filters: TopicCandidateFilter | None = None,
+) -> tuple[list[TopicCandidate], dict[str, int]]:
+    """Extract and filter high-inflow topic candidates across active narratives, eliminating clone copycats."""
+    from .providers.binance_web3 import VendorClusterLabels
+
+    filters = filters or TopicCandidateFilter()
+    accepted: list[TopicCandidate] = []
+    skipped: dict[str, int] = {}
+    seen_mints: set[str] = set()
+
+    for topic in topics:
+        if getattr(topic, "closed", False):
+            skipped["topic_closed"] = skipped.get("topic_closed", 0) + len(
+                getattr(topic, "tokens", ())
+            )
+            continue
+
+        raw_tokens = getattr(topic, "tokens", ())
+        if not raw_tokens:
+            continue
+
+        # Find maximum unique traders in this topic to identify the canonical leader
+        max_traders = max((getattr(t, "unique_traders_1h", 0) or 0) for t in raw_tokens)
+
+        for token in raw_tokens:
+            mint = getattr(token, "contract_address", "").strip()
+            if not mint or mint in seen_mints:
+                continue
+
+            unique_1h = getattr(token, "unique_traders_1h", None)
+
+            # Filter out 0-trader fake clone rugs that scammers deploy to imitate the
+            # narrative. `unique_1h is None` rejects deliberately: an unknown trader
+            # count is missing evidence, and for a rejection filter the fail-closed
+            # direction is to reject rather than to read absence as "not a clone".
+            if filters.filter_copycats and max_traders > 20 and (
+                unique_1h is None or unique_1h == 0 or unique_1h < 0.05 * max_traders
+            ):
+                    skipped["copycat_clone_rejected"] = skipped.get("copycat_clone_rejected", 0) + 1
+                    continue
+
+            seen_mints.add(mint)
+            candidate = TopicCandidate(
+                mint=mint,
+                symbol=getattr(token, "symbol", ""),
+                name=getattr(token, "symbol", ""),
+                topic_id=getattr(topic, "topic_id", ""),
+                topic_name=getattr(topic, "name_en", ""),
+                topic_category=getattr(topic, "category", None),
+                topic_net_inflow_usd=getattr(topic, "net_inflow_usd", None),
+                topic_net_inflow_1h_usd=getattr(topic, "net_inflow_1h_usd", None),
+                token_net_inflow_usd=getattr(token, "net_inflow_usd", None),
+                token_net_inflow_1h_usd=getattr(token, "net_inflow_1h_usd", None),
+                market_cap_usd=getattr(token, "market_cap_usd", None),
+                liquidity_usd=getattr(token, "liquidity_usd", None),
+                price_change_24h_pct=getattr(token, "price_change_24h_pct", None),
+                unique_traders_1h=unique_1h,
+                unique_traders_5m=getattr(token, "unique_traders_5m", None),
+                smart_money_holders=getattr(token, "smart_money_holders", None),
+                kol_holders=getattr(token, "kol_holders", None),
+                created_at=getattr(token, "created_at", None),
+                migrated=getattr(token, "migrated", False),
+                labels=VendorClusterLabels(
+                    insider_pct=getattr(token, "insider_holding_pct", None),
+                    sniper_pct=getattr(token, "sniper_holding_pct", None),
+                    dev_pct=getattr(token, "dev_holding_pct", None),
+                ),
+                raw=getattr(token, "raw", {}),
+            )
+            ok, reason = filters.accepts(candidate)
+            if ok:
+                accepted.append(candidate)
+            else:
+                skipped[reason] = skipped.get(reason, 0) + 1
+
+    accepted.sort(
+        key=lambda c: (c.token_net_inflow_1h_usd or 0.0, c.topic_net_inflow_1h_usd or 0.0),
+        reverse=True,
+    )
+    return accepted, skipped
+
+

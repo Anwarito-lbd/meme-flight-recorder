@@ -198,8 +198,30 @@ class ReadinessPolicy:
     # questions and a study may move one without the other.
     minimum_entry_age_minutes: float = 0.0
 
-    # Readiness never relaxes a safety gate, so there is no switch here to
-    # admit FAIL or UNKNOWN. Their exclusion is structural, in `assess` below.
+    @classmethod
+    def trading_policy(
+        cls,
+        minimum_entry_age_minutes: float = 0.0,
+        include_graduated: bool = True,
+    ) -> ReadinessPolicy:
+        """Readiness policy admitting surviving, mature, established and deep graduated tokens."""
+        states = {
+            LifecycleState.SURVIVING,
+            LifecycleState.MATURE,
+            LifecycleState.ESTABLISHED,
+        }
+        if include_graduated:
+            states.add(LifecycleState.GRADUATED)
+        return cls(
+            entry_states=frozenset(states),
+            minimum_entry_age_minutes=minimum_entry_age_minutes,
+        )
+
+    @classmethod
+    def permissive_for_deep_pools(cls) -> ReadinessPolicy:
+        """Permissive entry policy for deep pool candidates that have survived graduation."""
+        return cls.trading_policy(minimum_entry_age_minutes=0.0, include_graduated=True)
+
 
 
 @dataclass(frozen=True)

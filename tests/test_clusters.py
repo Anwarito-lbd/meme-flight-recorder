@@ -214,6 +214,24 @@ class SafetyIntegrationTests(unittest.TestCase):
         decision = self._engine().evaluate(cex)
         self.assertNotIn("cluster_evidence_missing", decision.failures)
 
+    def test_onchain_cluster_assessment_clear(self):
+        from meme_flight_recorder.clusters import assess_onchain_cluster
+
+        cluster = assess_onchain_cluster(top10_private_pct=15.0, limits=ClusterLimits())
+        self.assertEqual(cluster.verdict, ClusterVerdict.CLEAR)
+        self.assertEqual(cluster.confidence, 1.0)
+        self.assertEqual(cluster.failures, ())
+
+    def test_onchain_cluster_assessment_excessive(self):
+        from meme_flight_recorder.clusters import assess_onchain_cluster
+
+        cluster = assess_onchain_cluster(
+            top10_private_pct=45.0, limits=ClusterLimits(), maximum_top10_pct=30.0
+        )
+        self.assertEqual(cluster.verdict, ClusterVerdict.DISQUALIFIED)
+        self.assertIn("onchain_top_holder_concentration_excessive", cluster.failures)
+
 
 if __name__ == "__main__":
     unittest.main()
+

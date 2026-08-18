@@ -462,3 +462,49 @@ def combine(*assessments: ClusterAssessment) -> ClusterAssessment:
         tuple(warning for item in assessments for warning in item.warnings),
         metrics,
     )
+
+
+def assess_onchain_cluster(
+    top10_private_pct: float | None,
+    limits: ClusterLimits,
+    *,
+    maximum_top10_pct: float = 30.0,
+    security_evidence: Any | None = None,
+) -> ClusterAssessment:
+    """Assess concentration directly from verified on-chain holder data.
+
+    Used when third-party vendor labels are absent (e.g. established movers,
+    trending pools, and AI topic tokens). When on-chain authority, mint state,
+    and holder distribution have been resolved and verified, this grades the
+    token against on-chain concentration thresholds rather than failing closed
+    for missing vendor labels.
+    """
+    if top10_private_pct is None:
+        return ClusterAssessment(
+            ClusterVerdict.INSUFFICIENT_EVIDENCE,
+            0.0,
+            failures=(),
+            warnings=("onchain_holder_concentration_unknown",),
+            metrics={"top10_private_holder_pct": None},
+        )
+    failures: list[str] = []
+    warnings: list[str] = []
+    if top10_private_pct > maximum_top10_pct:
+        failures.append("onchain_top_holder_concentration_excessive")
+
+    if security_evidence is not None:
+        if getattr(security_evidence, "has_transfer_hook", None) is True:
+            failures.append("transfer_hook_active")
+        if getattr(security_evidence, "non_transferable", None) is True:
+            failures.append("non_transferable_token")
+
+    confidence = 1.0
+    verdict = ClusterVerdict.DISQUALIFIED if failures else ClusterVerdict.CLEAR
+    return ClusterAssessment(
+        verdict=verdict,
+        confidence=confidence,
+        failures=tuple(failures),
+        warnings=tuple(warnings),
+        metrics={"top10_private_holder_pct": top10_private_pct},
+    )
+

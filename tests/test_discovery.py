@@ -150,5 +150,65 @@ class MoverFilterTests(unittest.TestCase):
         self.assertIsNone(snapshot.transaction_simulation_ok)
 
 
+class TopicDiscoveryTests(unittest.TestCase):
+    def test_topic_candidates_extraction_and_filtering(self):
+        from meme_flight_recorder.discovery import (
+            TopicCandidateFilter,
+            select_topic_candidates,
+        )
+        from meme_flight_recorder.providers.binance_web3 import TopicNarrative, TopicToken
+
+        token1 = TopicToken(
+            chain_id="CT_501",
+            contract_address="TokenA1111111111111111111111111111111111111",
+            symbol="TOKA",
+            liquidity_usd=25_000.0,
+            net_inflow_1h_usd=12_000.0,
+            net_inflow_usd=50_000.0,
+            unique_traders_1h=45,
+            migrated=True,
+        )
+        token2 = TopicToken(
+            chain_id="CT_501",
+            contract_address="TokenB2222222222222222222222222222222222222",
+            symbol="TOKB",
+            liquidity_usd=500.0,  # too thin
+            net_inflow_1h_usd=100.0,
+            net_inflow_usd=100.0,
+            unique_traders_1h=30,
+            migrated=False,
+        )
+        token3 = TopicToken(
+            chain_id="CT_501",
+            contract_address="TokenC3333333333333333333333333333333333333",
+            symbol="TOKA",  # clone
+            liquidity_usd=10_000.0,
+            net_inflow_1h_usd=0.0,
+            unique_traders_1h=0,  # clone copycat
+            migrated=False,
+        )
+        topic = TopicNarrative(
+            topic_id="top-123",
+            chain_id="CT_501",
+            name_en="AI Agents Meta",
+            net_inflow_usd=100_000.0,
+            net_inflow_1h_usd=30_000.0,
+            tokens=(token1, token2, token3),
+        )
+
+        candidates, skipped = select_topic_candidates([topic], TopicCandidateFilter(minimum_liquidity_usd=5_000.0))
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].mint, "TokenA1111111111111111111111111111111111111")
+        self.assertEqual(candidates[0].topic_name, "AI Agents Meta")
+        self.assertEqual(skipped, {"liquidity_too_thin": 1, "copycat_clone_rejected": 1})
+
+
+        snapshot = candidates[0].to_snapshot()
+        self.assertEqual(snapshot.identity.address, "TokenA1111111111111111111111111111111111111")
+        self.assertEqual(snapshot.universe, Universe.SOLANA_EMERGING)
+        self.assertEqual(snapshot.raw_evidence["topic_name"], "AI Agents Meta")
+
+
 if __name__ == "__main__":
     unittest.main()
+

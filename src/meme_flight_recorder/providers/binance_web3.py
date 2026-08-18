@@ -285,6 +285,17 @@ class BinanceWeb3Provider:
         )
         return list(data.get("data") or [])
 
+    def topic_narratives(
+        self,
+        chain_id: str = CHAIN_SOLANA,
+        rank_type: int = 10,
+        sort: int = 20,
+        asc: bool = False,
+    ) -> list[TopicNarrative]:
+        """Return typed topic narratives with associated tokens and flow metrics."""
+        raw_topics = self.topic_rush(chain_id=chain_id, rank_type=rank_type, sort=sort, asc=asc)
+        return [_parse_topic(t) for t in raw_topics]
+
     def token_audit(
         self, contract_address: str, chain_id: str = CHAIN_SOLANA
     ) -> dict[str, Any]:
@@ -307,3 +318,114 @@ class BinanceWeb3Provider:
             timeout=self.timeout,
         )
         return dict(data.get("data") or {})
+
+
+@dataclass(frozen=True)
+class TopicToken:
+    """One token associated with an AI-detected market narrative."""
+
+    chain_id: str
+    contract_address: str
+    symbol: str
+    decimals: int | None = None
+    created_at: datetime | None = None
+    market_cap_usd: float | None = None
+    liquidity_usd: float | None = None
+    price_change_24h_pct: float | None = None
+    net_inflow_usd: float | None = None
+    net_inflow_1h_usd: float | None = None
+    volume_buy_usd: float | None = None
+    volume_sell_usd: float | None = None
+    unique_traders_5m: int | None = None
+    unique_traders_1h: int | None = None
+    trade_count_5m: int | None = None
+    holders: int | None = None
+    kol_holders: int | None = None
+    smart_money_holders: int | None = None
+    dev_holding_pct: float | None = None
+    sniper_holding_pct: float | None = None
+    insider_holding_pct: float | None = None
+    protocol: int | None = None
+    internal: bool = False
+    migrated: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TopicNarrative:
+    """An AI-detected hot topic narrative with associated tokens and inflow stats."""
+
+    topic_id: str
+    chain_id: str
+    name_en: str
+    name_cn: str | None = None
+    category: str | None = None
+    closed: bool = False
+    topic_link: str | None = None
+    created_at: datetime | None = None
+    progress_pct: float | None = None
+    ai_summary_en: str | None = None
+    net_inflow_usd: float | None = None
+    net_inflow_1h_usd: float | None = None
+    net_inflow_ath_usd: float | None = None
+    token_size: int | None = None
+    tags: tuple[str, ...] = ()
+    tokens: tuple[TopicToken, ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+def _parse_topic_token(row: dict[str, Any]) -> TopicToken:
+    return TopicToken(
+        chain_id=str(row.get("chainId", "")),
+        contract_address=str(row.get("contractAddress", "")),
+        symbol=str(row.get("symbol", "")),
+        decimals=_as_int(row.get("decimals")),
+        created_at=_timestamp(row.get("createTime")),
+        market_cap_usd=_as_float(row.get("marketCap")),
+        liquidity_usd=_as_float(row.get("liquidity")),
+        price_change_24h_pct=_as_float(row.get("priceChange24h")),
+        net_inflow_usd=_as_float(row.get("netInflow")),
+        net_inflow_1h_usd=_as_float(row.get("netInflow1h")),
+        volume_buy_usd=_as_float(row.get("volumeBuy")),
+        volume_sell_usd=_as_float(row.get("volumeSell")),
+        unique_traders_5m=_as_int(row.get("uniqueTrader5m")),
+        unique_traders_1h=_as_int(row.get("uniqueTrader1h")),
+        trade_count_5m=_as_int(row.get("count5m")),
+        holders=_as_int(row.get("holders")),
+        kol_holders=_as_int(row.get("kolHolders")),
+        smart_money_holders=_as_int(row.get("smartMoneyHolders")),
+        dev_holding_pct=_as_float(row.get("devHoldingPercent")),
+        sniper_holding_pct=_as_float(row.get("sniperHoldingPercent")),
+        insider_holding_pct=_as_float(row.get("insiderHoldingPercent")),
+        protocol=_as_int(row.get("protocol")),
+        internal=_as_int(row.get("internal")) == 1,
+        migrated=_as_int(row.get("migrateStatus")) == 1,
+        raw=row,
+    )
+
+
+def _parse_topic(row: dict[str, Any]) -> TopicNarrative:
+    name_obj = row.get("name") or {}
+    ai_obj = row.get("aiSummary") or {}
+    token_list = row.get("tokenList") or []
+    tags = tuple(str(tag) for tag in (row.get("topicTags") or []))
+    return TopicNarrative(
+        topic_id=str(row.get("topicId", "")),
+        chain_id=str(row.get("chainId", "")),
+        name_en=str(name_obj.get("topicNameEn") or ""),
+        name_cn=name_obj.get("topicNameCn"),
+        category=row.get("type"),
+        closed=_as_int(row.get("close")) == 1,
+        topic_link=row.get("topicLink"),
+        created_at=_timestamp(row.get("createTime")),
+        progress_pct=_as_float(row.get("progress")),
+        ai_summary_en=ai_obj.get("aiSummaryEn"),
+        net_inflow_usd=_as_float(row.get("topicNetInflow")),
+        net_inflow_1h_usd=_as_float(row.get("topicNetInflow1h")),
+        net_inflow_ath_usd=_as_float(row.get("topicNetInflowAth")),
+        token_size=_as_int(row.get("tokenSize")),
+        tags=tags,
+        tokens=tuple(_parse_topic_token(t) for t in token_list),
+        raw=row,
+    )
+
