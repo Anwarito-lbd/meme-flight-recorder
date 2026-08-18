@@ -116,14 +116,31 @@ in order:
 
 - **$50 equity, $10 per position** (20% per trade, 5 concurrent). Chosen on cost:
   the round trip is 1.81% of $10 against 5.44% of $0.80.
-- **X API: not being paid for.** Reachable at post-gate volume (~$6/month) but
-  the operator has declined. Do not propose it again unless asked. The registry
-  skills that proxy X (`fetcher-sh/fetcher-skills@twitter-api`, 2.4K installs;
-  `xquik-dev/x-twitter-scraper`, 46) are **also paid, with undisclosed
-  per-call pricing** — inspected 2026-08-15, both recorded in
+- **X API: the operator has a Bearer token; the cost decision is still open.**
+  Late on 2026-08-15 the operator produced an X Bearer token for an existing
+  app. **A token does not make reads free** — under the pay-per-use model that
+  replaced the free tier, it authenticates and then bills $0.005 per post read.
+  The operator had declined to pay an hour earlier, so treat the spend question
+  as unresolved rather than settled either way, and check the app's plan and
+  credit balance at developer.x.com before wiring anything.
+
+  If it is built: `providers/x.py` reading `X_BEARER_TOKEN` from `.env`,
+  **post-gate only** (~1 candidate in 20), with a **hard daily read budget** in
+  config so a loop cannot spend the account, journalled like every other
+  provider. Zero results is UNKNOWN, never neutral; it ranks and never gates.
+  Designed, not built — nothing in the tree reads X today.
+
+  The registry skills that proxy X (`fetcher-sh/fetcher-skills@twitter-api`,
+  2.4K installs; `xquik-dev/x-twitter-scraper`, 46) are **also paid, with
+  undisclosed per-call pricing** — inspected 2026-08-15, both recorded in
   `docs/third-party-audit.md`. There is no free X route: the free tier was
   discontinued, and scraping breaches both X's ToS and this project's
   public-information rule.
+
+  **Never accept a credential value in chat.** One was pasted into a transcript
+  on 2026-08-15 and had to be treated as burned and rotated. Secrets go in
+  `.env` (gitignored, verified untracked) by the operator's own hand; providers
+  read them by name and no assistant should ever handle the value.
 - **Sentiment: local or nothing.** `SCOUT_SENTIMENT_BACKEND` defaults to `none`.
   Ollama is installed on this host with no models pulled; `ollama pull
   qwen2.5:3b` plus `SCOUT_SENTIMENT_BACKEND=ollama` in `.env` turns it on for
