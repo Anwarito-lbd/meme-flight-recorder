@@ -724,6 +724,82 @@ distribution shows the model discriminating rather than agreeing with everything
 return on this population. What is not established is whether the model's reading
 of the text does, and that is the arm still being filled.
 
+## 2026-08-19: the virality thesis is answered, and the answer is no
+
+The operator's thesis was that meme coins are driven by virality rather than
+on-chain structure, and that a well-prompted model reads virality the arithmetic
+misses. It had never been tested here -- every prior negative result measured
+chain structure or price shape. It has now been tested, on a well-powered sample,
+and it fails.
+
+`backfill_narrative_verdicts.py` ran `qwen2.5:3b` over every stored narrative
+text: **2,047 verdicts** -- 1,236 spreading, 627 flat, 184 declined. The model
+discriminated rather than agreeing with everything, which is what makes the
+result meaningful.
+
+**Death, held-out half:**
+
+| arm | signal present | signal absent |
+|---|---:|---:|
+| C1 model says spreading | **36.5%** (n=554) | 36.8% (n=307) |
+| C2 model reads positive | 33.6% (n=107) | 37.5% (n=827) |
+| A followers above threshold | 36.0% (n=514) | 40.0% (n=60) |
+
+**A 0.3 point difference on 861 coins.** That is not an underpowered sample, it
+is a measurement of no effect. C2 flips direction between halves -- positive was
+5.3 points *worse* on development and 3.9 points *better* on held out -- which is
+the signature of noise.
+
+**Return, held-out half, after costs at $10:**
+
+| arm | EV/$ | after deleting top 3 | growth/trade |
+|---|---:|---:|---:|
+| base rate | -0.6322 | -0.7901 | -0.1602 |
+| A followers | -0.6379 | -0.8218 | -0.1581 |
+| **C1 spreading** | **-0.6423** | -0.8952 | -0.1681 |
+| C1 flat | -0.6032 | -0.8170 | -0.1481 |
+
+The model's "spreading" cohort did **worse** than its "flat" one. Every arm is
+negative on EV and on geometric growth.
+
+**What this closes.** The free social layer -- the vendor's narrative text, the
+follower reach, the model's reading of both -- does not predict survival or
+return on this population. That was the last question answerable without
+spending money.
+
+**What it does not close.** A better social source (X's own API, LunarCrush) is
+untested, and so is a longer horizon: these outcomes are measured over hours, so
+a 2x on day three is invisible. Neither is free.
+
+## 2026-08-19: three pricing defects, all found by disbelieving a good-looking number
+
+Recorded together because they are one lesson. Each was found because an output
+looked too good, not because a test failed.
+
+1. **The pair overlay erased good data.** `_apply_pair_evidence` wrote
+   DexScreener's `None` liquidity over the discovery feed's real figure whenever
+   the pool reported no depth -- normal before graduation. `liquidity_unknown`
+   fell from 31 per cycle to **0**, and candidates clearing every gate rose 5 to
+   12. Its two neighbouring fields had guarded against exactly this; liquidity
+   did not.
+2. **A price is not a price if nothing can be sold into it.** Outcome resolution
+   took the deepest quoting pair with no liquidity floor. One mint's deepest pair
+   held **$0.04** and turned an entry into 27,183x. EV read +9,241/dollar.
+3. **Depth is the wrong tie-break when venues disagree.** With a floor in place,
+   a mint still read 29,359x: pumpswap $0.001053, meteora $0.001071 and $0.001075,
+   orca **$5.27** on the deepest pool of the four. Three venues agreeing beats one
+   venue's size, so `present_prices` can now take the median.
+
+`present_prices` gained `minimum_liquidity_usd` and `use_median`, **both
+defaulting to the old behaviour**, so no existing study silently changed.
+
+**The consequence that has not been worked through.** Every other study resolving
+outcomes through that helper still runs at the old defaults, and the bias has a
+direction: a dust pool's or an outlier venue's quote counts as a live price, so
+an unsellable coin reads as alive. That **understates death and overstates
+return**. The recorded 84.2% vanished figure is a floor on effective death, not a
+ceiling, and every outcome-derived number in this file predates the fix.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:
