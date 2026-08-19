@@ -94,6 +94,39 @@ def social_observations(database_path: str) -> dict[str, dict[str, Any]]:
     return first
 
 
+def cached_verdicts(cache_path: str) -> dict[str, dict[str, Any]]:
+    """The local model's reading of each mint's narrative text, if backfilled.
+
+    Populated offline by `backfill_narrative_verdicts.py`, because the live
+    verdict is journalled on `scout_candidate_evaluated` while the social fields
+    are journalled on `candidate_observed` -- the two never meet on the same
+    mint, and only 28 scout decisions exist against 2,150 texts.
+
+    A missing cache is not an empty opinion: the arm reports that it could not be
+    measured rather than scoring every mint as "the model said no".
+    """
+    if not Path(cache_path).exists():
+        return {}
+    connection = sqlite3.connect(f"file:{cache_path}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "select mint, sentiment, accelerating, model from verdicts"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    finally:
+        connection.close()
+    return {
+        mint: {
+            "sentiment": sentiment,
+            # None stays None. "The model declined" is not "the model said flat".
+            "accelerating": None if accelerating is None else bool(accelerating),
+            "model": model,
+        }
+        for mint, sentiment, accelerating, model in rows
+    }
+
+
 def death_rate(mints: list[str], deaths: dict[str, bool]) -> tuple[float | None, int]:
     """Share of a cohort that died, and the cohort size."""
     scored = [m for m in mints if m in deaths]
@@ -137,6 +170,11 @@ def main() -> int:
     parser.add_argument("--minimum-cohort", type=int, default=100)
     parser.add_argument("--minimum-edge-points", type=float, default=10.0)
     parser.add_argument("--limit", type=int, default=0, help="cap mints priced (0 = all)")
+    parser.add_argument(
+        "--verdict-cache",
+        default="data/narrative_verdicts.db",
+        help="cache written by backfill_narrative_verdicts.py",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
@@ -204,10 +242,17 @@ def main() -> int:
         if mature[m].get("twitter_followers") is not None
     }
     has_handle = {m for m in mints if mature[m].get("twitter_handle")}
+    verdicts_cache = cached_verdicts(args.verdict_cache)
+    # Only mints the model actually answered for. A declined answer is excluded
+    # from both sides rather than counted as "not spreading".
     model_says = {
-        m
-        for m in mints
-        if mature[m].get("model_says_accelerating") is True
+        m for m in mints if (verdicts_cache.get(m) or {}).get("accelerating") is True
+    }
+    model_flat = {
+        m for m in mints if (verdicts_cache.get(m) or {}).get("accelerating") is False
+    }
+    model_positive = {
+        m for m in mints if (verdicts_cache.get(m) or {}).get("sentiment") == "positive"
     }
 
     base_rate, base_n = death_rate(mints, deaths)
@@ -249,19 +294,51 @@ def main() -> int:
         o_txt = "n/a" if o_rate is None else f"{o_rate:5.1f}%"
         print(f"  {label:<12} handle {w_txt} (n={w_n:,})   none {o_txt} (n={o_n:,})")
 
-    print("\n=== arm C: the model's reading (ranks only, can never gate) ===\n")
-    if not model_says:
-        print("  no model verdicts journalled; run the scout with"
-              " SCOUT_SENTIMENT_BACKEND=ollama to populate this arm")
+    print()
+    print("=== arm C: the model's reading (ranks only, can never gate) ===")
+    print()
+    if not verdicts_cache:
+        print("  No verdict cache. Run:")
+        print("    scripts/backfill_narrative_verdicts.py")
+        print("  An absent cache is 'not measured', never 'the model said no'.")
     else:
+        models = sorted({v["model"] for v in verdicts_cache.values()})
+        answered = len(model_says) + len(model_flat)
+        print(f"  model(s): {models}")
+        print(
+            f"  answered for {answered:,} of {len(mints):,} mints;"
+            f" declined on {len(mints) - answered:,}"
+        )
+        print()
+        print("  C1 -- the model says the story is spreading:")
         for label, cohort in (("development", development), ("held out", holdout)):
             said = [m for m in cohort if m in model_says]
-            rest = [m for m in cohort if m not in model_says]
+            flat = [m for m in cohort if m in model_flat]
             s_rate, s_n = death_rate(said, deaths)
-            r_rate, r_n = death_rate(rest, deaths)
+            f_rate, f_n = death_rate(flat, deaths)
             s_txt = "n/a" if s_rate is None else f"{s_rate:5.1f}%"
+            f_txt = "n/a" if f_rate is None else f"{f_rate:5.1f}%"
+            print(
+                f"    {label:<12} spreading {s_txt} (n={s_n:,})"
+                f"   flat {f_txt} (n={f_n:,})"
+            )
+        print()
+        print("  C2 -- the model reads the text as positive:")
+        for label, cohort in (("development", development), ("held out", holdout)):
+            pos = [m for m in cohort if m in model_positive]
+            rest = [m for m in cohort if m in verdicts_cache and m not in model_positive]
+            p_rate, p_n = death_rate(pos, deaths)
+            r_rate, r_n = death_rate(rest, deaths)
+            p_txt = "n/a" if p_rate is None else f"{p_rate:5.1f}%"
             r_txt = "n/a" if r_rate is None else f"{r_rate:5.1f}%"
-            print(f"  {label:<12} spreading {s_txt} (n={s_n:,})   rest {r_txt} (n={r_n:,})")
+            print(
+                f"    {label:<12} positive  {p_txt} (n={p_n:,})"
+                f"   rest {r_txt} (n={r_n:,})"
+            )
+        print()
+        print("  Reported, never wired. A model asked the same question twice may")
+        print("  answer differently; if this arm beats arm A, the honest response")
+        print("  is to find the computable feature it reacts to and gate on that.")
 
     # ---------------------------------------------------------------- verdict
     dev_rate, _dev_n = verdicts["development"]
