@@ -557,10 +557,28 @@ class Collector:
             return snapshot, None
         if pair is None:
             return snapshot, None
+        # Overlay, never erase. `pair.liquidity_usd` is None whenever DexScreener
+        # knows the pair but reports no depth for it, which is the normal case
+        # before graduation: measured 2026-08-19 over 24 pre-bond candidates, a
+        # pair was found for 13 and *every one* carried None while the discovery
+        # feed had a real figure -- $11,421 in one case, overwritten with nothing.
+        #
+        # That one unguarded assignment is the single largest rejection reason in
+        # the project: `liquidity_unknown` fires on 28,678 observations, and
+        # 5,329 mints were rejected on it *and nothing else*. The gate was right
+        # every time; it was reading a value this line had just destroyed.
+        #
+        # `is not None` rather than `or`, unlike the two fields below it: a pool
+        # measured at exactly 0.0 is a drained pool, which is evidence the exit
+        # engine acts on, and `or` would silently discard it.
         return (
             replace(
                 snapshot,
-                liquidity_usd=pair.liquidity_usd,
+                liquidity_usd=(
+                    pair.liquidity_usd
+                    if pair.liquidity_usd is not None
+                    else snapshot.liquidity_usd
+                ),
                 age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
                 price_usd=pair.price_usd or snapshot.price_usd,
                 volume_5m_usd=pair.volume_5m_usd,

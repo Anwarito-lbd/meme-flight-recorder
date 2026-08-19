@@ -305,6 +305,127 @@ class CollectorTests(unittest.TestCase):
             payload["socials"]["website"], "https://www.tiktok.com/@greciator/video/123"
         )
 
+    def test_a_depthless_pair_does_not_erase_the_feed_liquidity(self):
+        """The unguarded overlay behind the largest rejection reason in the project.
+
+        DexScreener returns None for `liquidity_usd` whenever it knows a pair but
+        reports no depth for it, which is the normal case before graduation.
+        `_with_pair` assigned that None straight over a real figure from the
+        discovery feed -- measured 2026-08-19, a pair was found for 13 of 24
+        pre-bond candidates and every one carried None while the feed had a
+        value, $11,421 in one case.
+
+        The gate that then fired, `liquidity_unknown`, was correct every time. It
+        was reading a value this overlay had just destroyed: 28,678 observations
+        carry it, and 5,329 mints were rejected on it and nothing else.
+        """
+        from datetime import UTC
+        from datetime import datetime as dt
+
+        from meme_flight_recorder.providers.dexscreener import PairEvidence
+
+        def pair(liquidity):
+            return PairEvidence(
+                chain_id="solana",
+                dex_id="raydium",
+                pair_address="PairAddr",
+                base_token="Mint1",
+                quote_token="SOL",
+                price_usd=0.002,
+                liquidity_usd=liquidity,
+                fdv_usd=None,
+                market_cap_usd=None,
+                volume_5m_usd=100.0,
+                volume_1h_usd=None,
+                volume_24h_usd=None,
+                buy_txns_5m=3,
+                sell_txns_5m=1,
+                pair_created_at=dt(2026, 8, 2, 11, 0, tzinfo=UTC),
+            )
+
+        class Pairs:
+            def __init__(self, value):
+                self.value = value
+
+            def deepest_pair(self, mint):
+                return pair(self.value)
+
+        row = _row("Mint1", CLEAN_LABELS)  # carries liquidity_usd = 25_000.0
+        collector = Collector(
+            self.settings,
+            self.recorder,
+            discovery=FakeDiscovery([row]),
+            pair_provider=Pairs(None),
+            config=CollectorConfig(stages=("migrated",), enrich=False),
+            clock=lambda: NOW,
+        )
+        snapshot, _ = collector._apply_pair_evidence(row.to_snapshot(NOW), "Mint1")
+        self.assertEqual(snapshot.liquidity_usd, 25_000.0)
+
+    def test_a_pair_with_real_depth_still_wins(self):
+        """The overlay must still overlay -- the pool is the better measurement."""
+        from datetime import UTC
+        from datetime import datetime as dt
+
+        from meme_flight_recorder.providers.dexscreener import PairEvidence
+
+        class Pairs:
+            def deepest_pair(self, mint):
+                return PairEvidence(
+                    chain_id="solana", dex_id="raydium", pair_address="P",
+                    base_token="Mint1", quote_token="SOL", price_usd=0.002,
+                    liquidity_usd=90_000.0, fdv_usd=None, market_cap_usd=None,
+                    volume_5m_usd=None, volume_1h_usd=None, volume_24h_usd=None,
+                    buy_txns_5m=None, sell_txns_5m=None,
+                    pair_created_at=dt(2026, 8, 2, 11, 0, tzinfo=UTC),
+                )
+
+        row = _row("Mint1", CLEAN_LABELS)
+        collector = Collector(
+            self.settings, self.recorder,
+            discovery=FakeDiscovery([row]),
+            pair_provider=Pairs(),
+            config=CollectorConfig(stages=("migrated",), enrich=False),
+            clock=lambda: NOW,
+        )
+        snapshot, _ = collector._apply_pair_evidence(row.to_snapshot(NOW), "Mint1")
+        self.assertEqual(snapshot.liquidity_usd, 90_000.0)
+
+    def test_a_drained_pool_reads_as_zero_not_as_the_stale_feed_value(self):
+        """Exactly 0.0 is a measurement -- the pool is empty -- not an absence.
+
+        This is why the guard tests `is not None` rather than using `or`, unlike
+        the two fields beside it. `or` would treat a drained pool as no reading
+        and restore the feed's stale figure, hiding the collapse the exit engine
+        exists to catch.
+        """
+        from datetime import UTC
+        from datetime import datetime as dt
+
+        from meme_flight_recorder.providers.dexscreener import PairEvidence
+
+        class Pairs:
+            def deepest_pair(self, mint):
+                return PairEvidence(
+                    chain_id="solana", dex_id="raydium", pair_address="P",
+                    base_token="Mint1", quote_token="SOL", price_usd=0.002,
+                    liquidity_usd=0.0, fdv_usd=None, market_cap_usd=None,
+                    volume_5m_usd=None, volume_1h_usd=None, volume_24h_usd=None,
+                    buy_txns_5m=None, sell_txns_5m=None,
+                    pair_created_at=dt(2026, 8, 2, 11, 0, tzinfo=UTC),
+                )
+
+        row = _row("Mint1", CLEAN_LABELS)
+        collector = Collector(
+            self.settings, self.recorder,
+            discovery=FakeDiscovery([row]),
+            pair_provider=Pairs(),
+            config=CollectorConfig(stages=("migrated",), enrich=False),
+            clock=lambda: NOW,
+        )
+        snapshot, _ = collector._apply_pair_evidence(row.to_snapshot(NOW), "Mint1")
+        self.assertEqual(snapshot.liquidity_usd, 0.0)
+
     def test_journal_chain_stays_valid_after_collection(self):
         discovery = FakeDiscovery(
             [_row("Mint1", CLEAN_LABELS), _row("Mint2", DIRTY_LABELS)]
