@@ -514,6 +514,69 @@ received a one-time $10 credit voucher — roughly 2,000 free reads** — and th
 account's token came from an existing app. Only the operator can check that
 balance at developer.x.com. Nothing has been built against X.
 
+## 2026-08-19: `liquidity_unknown` is fixed, and it was never about the tokens
+
+The largest rejection reason in the project's history has been eliminated, and
+the cause was one unguarded assignment rather than anything about the market.
+
+`scripts/study_rejection_split.py` classifies every failure reason as an absence
+or a finding by a mechanical rule (`*_unknown`, plus
+`cluster_evidence_insufficient` and `identity_unverified`), and reconciles every
+observation into exactly one bucket. Over **50,806 observations, all 50,806
+accounted for**:
+
+| bucket | n | share |
+|---|---:|---:|
+| cleared every gate | 1,187 | 2.34% |
+| **rejected ONLY on missing evidence** | **12,155** | **23.92%** |
+| measured failure, plus gaps | 29,005 | 57.09% |
+| measured failure only | 8,459 | 16.65% |
+
+**24.50% of all rejections were never a decision about a token.** Per unique
+mint it is 22.86%, and `liquidity_unknown` alone carried 5,329 of those 5,628
+mints.
+
+**The cause.** `Collector._apply_pair_evidence` overlays DexScreener's pair onto
+the snapshot. DexScreener returns `liquidity_usd = None` whenever it knows a pair
+but reports no depth — the normal case before graduation — and the overlay
+assigned that `None` straight over the discovery feed's own figure. The two
+fields beside it already guarded against exactly this (`pair.pair_age_minutes or
+snapshot.age_minutes`, `pair.price_usd or snapshot.price_usd`); liquidity did
+not.
+
+Measured before the fix over 24 pre-bond candidates: a pair was found for 13, and
+**all 13 carried `None` while the feed held a real value** — $11,421 in one case.
+Zero of the 13 had usable pair liquidity. The journal agreed: liquidity was
+`None` on **98.5% of `finalizing`** and **72.4% of `new`** against 2.1% of
+`migrated`.
+
+**Measured after the fix, on 78 live candidates across all four feeds:**
+
+| stage | liquidity unknown before | after |
+|---|---:|---:|
+| `new` | 72.4% | **0.0%** |
+| `finalizing` | 98.5% | **0.0%** |
+| `migrated` | 2.1% | **0.0%** |
+| `mover` | 0.0% | 0.0% |
+
+And on the first full cycle after it: `liquidity_unknown` **31 → 0**, candidates
+clearing every gate **5 → 12**, and the top rejection reason is now
+`liquidity_below_minimum` at 36 — a *measurement* replacing a gap. Most of those
+tokens really are too thin; the difference is that the system now knows it
+instead of guessing. Pre-bond tokens also reach the book for the first time and
+are correctly held at `watch:lifecycle_new_not_an_entry_state`.
+
+**The guard uses `is not None`, not `or`,** unlike its neighbours: a pool
+measured at exactly 0.0 is a *drained* pool, which is evidence the exit engine
+acts on, and `or` would restore the stale feed figure over it. Three tests, the
+load-bearing one confirmed failing against the pre-fix code.
+
+**What this does not claim.** Recall is not yet shown to improve. 13 of 56
+historical winners were rejected purely on missing route/impact/liquidity
+evidence, so the ceiling on recovery is real but unproven forward. The remaining
+gaps — `entry_route_unknown` and the three impact reasons, 6,362 mints each —
+are the Jupiter quota and are a separate fix.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:
