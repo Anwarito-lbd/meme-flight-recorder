@@ -325,14 +325,33 @@ class PositionMonitor:
                 if self.config.position_usd_override is not None
                 else self.settings.starting_equity_usd * micro.position_pct_of_equity / 100.0
             )
+            # Built from the live book on every candidate, not once per cycle.
+            # `live` grows as positions open below, so a state computed before
+            # the loop would let a single pass open the entire book against a
+            # cap that still read zero -- the same shape as the `opened` bug
+            # noted above. Passing only equity, which is what this did, left
+            # `open_positions` and `aggregate_open_risk_usd` at their defaults
+            # and made both exposure checks in the risk engine unreachable.
+            #
+            # Notional, not risk-at-stop: at micro size the engine compares this
+            # against a cap on open *position value*, and the position is the
+            # risk because a stop cannot be relied on to bound it here.
+            exposure_usd = sum(
+                held.entry_price * held.quantity for held in live.values()
+            )
             approval = self.risk.approve(
                 Universe.SOLANA_EMERGING,
-                PortfolioState(equity_usd=self.settings.starting_equity_usd),
+                PortfolioState(
+                    equity_usd=self.settings.starting_equity_usd,
+                    open_positions=len(live),
+                    aggregate_open_risk_usd=exposure_usd,
+                ),
                 entry_price=price,
                 pool_liquidity_usd=liquidity,
                 estimated_round_trip_cost_pct=round_trip_cost(
                     sized_usd, self.settings.costs
                 ).pct_of_position,
+                proposed_position_usd=sized_usd,
             )
             if not approval.approved:
                 skip(f"risk:{approval.reason}")

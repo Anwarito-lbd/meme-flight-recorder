@@ -68,6 +68,7 @@ class RiskEngine:
         *,
         pool_liquidity_usd: float | None = None,
         estimated_round_trip_cost_pct: float | None = None,
+        proposed_position_usd: float | None = None,
     ) -> RiskDecision:
         if state.kill_switch:
             return RiskDecision(False, "kill_switch_active")
@@ -111,6 +112,24 @@ class RiskEngine:
         else:
             risk = state.equity_usd * self.limits.capital_at_risk_per_solana_trade_pct / 100
             position = risk
+
+        if proposed_position_usd is not None:
+            # The caller is sizing (the collector's --position-usd), and every
+            # check below this line must then be applied to the position that
+            # will actually open. Approving the engine's own smaller number and
+            # opening a larger one meant the pool-share and aggregate-exposure
+            # checks were evaluating a trade nobody was going to place.
+            #
+            # Risk follows position because at this scale the position *is* the
+            # risk: a thin meme coin can gap to zero or stop being sellable
+            # before a stop fills, which is measured -- one replayed collapse
+            # fell ~1700x below its stop inside a single candle.
+            if universe == Universe.CEX_ESTABLISHED and not micro_mode:
+                return RiskDecision(False, "caller_sizing_not_supported_for_cex")
+            position = proposed_position_usd
+            risk = position
+            if self.micro is not None and position < self.micro.minimum_viable_position_usd:
+                return RiskDecision(False, "position_below_viable_minimum")
 
         if micro_mode:
             assert self.micro is not None

@@ -16,11 +16,17 @@ manages **paper** positions, and measures whether its own judgement was any good
 ## Where it stands in one paragraph
 
 The measurement apparatus works and is trustworthy. The strategy does not make
-money, and the bot has **never opened a position**. Every gate, filter and
-provider has now been run against real data at least once, and doing that found
-nine defects — four of them in code written the same day and already believed
-working. What exists is an honest instrument that keeps catching its own errors.
-What does not exist is a profitable bot.
+money. **The bot has now opened positions — the "never opened a position" claim
+that stood here until 2026-08-18 was stale.** Six opened on 2026-08-15 at $0.80
+each (the old 2%-of-equity sizing), and the first three closed on 2026-08-18:
+**all three on `security_liquidity_withdrawn`, 0% win rate, −$2.21 total,
+expectancy −$0.7353/trade, profit factor 0.000.** Three are still open. The
+forward record therefore reads **3 of 30** trades, and its first evidence is that
+the population rugs. Every gate, filter and provider has been run against real
+data at least once, and doing that found nine defects — four of them in code
+written the same day and already believed correct. What exists is an honest
+instrument that keeps catching its own errors. What does not exist is a
+profitable bot.
 
 ## 2026-08-15: the other population was tested, and the signal is empty
 
@@ -148,11 +154,21 @@ in order:
 - **Nothing signs.** No API keys were entered by the assistant and none should
   be; every provider reads a named environment variable the operator fills in.
 
-**The one trap to know about.** `ReadinessPolicy.trading_policy()` exists and
-admits SURVIVING / MATURE / ESTABLISHED / deep-graduated tokens. Every shipped
-`[strictness.*]` block sets `readiness_policy = []`, so nothing can open a
-position. Calling that classmethod is the single visible act that turns research
-into trading, and it needs a study first.
+**The trap this file used to describe, corrected 2026-08-18.** It read:
+"`ReadinessPolicy.trading_policy()` exists ... calling that classmethod is the
+single visible act that turns research into trading, and it needs a study
+first." **It has already been called, and it is in the shipped CLI.**
+`cli.py:658` passes `ReadinessPolicy.permissive_for_deep_pools()` — which wraps
+`trading_policy()` — into the `MonitorConfig` the collector builds, so
+`collect --paper-trade` admits GRADUATED / SURVIVING / MATURE / ESTABLISHED with
+no minimum age and opens positions today.
+
+The confusion is two different fields sharing one name.
+`StrictnessLevel.readiness_policy` is a tuple of state names read from TOML and
+is empty on all three levels, so **`scout` still cannot open a position** — that
+half of the old claim holds. `MonitorConfig.readiness_policy` is a
+`ReadinessPolicy` object set in code, never read from TOML, and the collector
+overrides it. Check which one you are looking at before quoting either.
 
 ## 2026-08-15: X's API is no longer priced out — the recorded claim was stale
 
@@ -319,6 +335,106 @@ efficiency and accepting 5 shots rather than 50. Journal every trade so the
 realised stop slippage and the actual total-loss rate can be compared against the
 2-of-9 figure this warning rests on.
 
+## 2026-08-18: the risk engine's exposure caps were dead on the paper path
+
+Found while wiring the collector up to run unattended, and fixed before it was
+started. `PositionMonitor.consider()` built `PortfolioState(equity_usd=...)` and
+nothing else, so `open_positions` and `aggregate_open_risk_usd` took their
+dataclass defaults of `0` and `0.0` **on every single call**. Both exposure
+checks in `risk.approve()` therefore compared against zero and could never fire:
+
+- `[risk] maximum_open_positions = 2` — never reached.
+- `[risk.micro] maximum_aggregate_open_position_pct = 50.0` — never reached.
+
+The only surviving limit was `MonitorConfig.maximum_open_positions`, a CLI flag
+defaulting to 10. At the operator's $10 sizing the book could therefore reach
+**$100 open against $50 of equity — 200% of the account, against a configured
+50% ceiling.** No threshold was wrong; the state that the thresholds read was
+never populated. Same family as the `PositionMonitor.consider()` status bug and
+the `first_usable` deadline bug: a check that quietly stopped being one.
+
+**A second defect in the same call, found reading it.** `--position-usd`
+replaced the engine's sizing *after* approval, so `_liquidity()` tested the
+pool share of the engine's own number (2% of equity, $1.00) while a $10 position
+opened. `maximum_pool_share_pct = 0.5` — the check the monitor's own comment
+calls "the check that matters most as size grows" — was being applied to a
+position a tenth the size of the real one. `approve()` now takes
+`proposed_position_usd`, so the caller's size is what gets approved, and the cap
+keeps exactly one implementation.
+
+Four regression tests in `tests/test_monitor.py`, each confirmed failing against
+the pre-fix code before the fix was written. Suite 609 green, ruff clean.
+
+**Where the first realised trades actually came from, stated carefully.** A
+collector session ran on its own earlier on 2026-08-18 (cycles completing 19:35
+to 20:24 UTC, ~13 minutes each, 148-149 candidates observed and all reconciled).
+Its exit engine closed three of the six 2026-08-15 positions at 20:36 UTC. **All
+of that is pre-fix**, and an earlier draft of this entry wrongly credited it to
+the first post-fix cycle — the timestamps disagreed with the run's start time.
+The same "check that no result is not no data" discipline applies to attribution:
+a cycle summary in the journal is not necessarily *your* cycle.
+
+That session's rejection profile is still worth recording, because it is the
+freshest reconciled read: 11 eligible, 5 monitor, 132 reject, and
+`liquidity_unknown` top at 78 — exactly what this file predicts.
+
+**What the fix changed, measured over 8 unattended cycles the same night.**
+73-74 candidates per cycle, all reconciled; 8-10 eligible, 0-1 monitor, ~63
+reject. Top rejections `holder_concentration_excessive` ~40 and
+`liquidity_unknown` ~33, so the picture this file already describes is unchanged.
+**Zero positions opened across all eight cycles, and that is the cap working
+rather than the scout failing**: the book held 3 and then 2 positions against
+`[risk] maximum_open_positions = 2`, a limit that could never fire before. The
+same run's exit engine closed CATE, taking the forward record to 4 trades.
+
+**The account is currently entry-blocked, and it is worth being explicit about
+it.** Both remaining slots are held by $0.80 positions opened on 2026-08-15 under
+the old 2% sizing — XST and Qenis — so nothing new can open until one of them
+closes. Four of the six 2026-08-15 positions have already closed on
+`security_liquidity_withdrawn`, so the slots do free themselves; this is a
+queue, not a deadlock. Note the consequence for the forward record: the first
+trades in it are $0.80 positions, not the $10 the sizing decision calls for, so
+their expectancy is measured in the cost regime the $10 decision exists to
+escape. Trades opened from here are the ones that test the decision.
+
+**Forward record as of 2026-08-19, 4 closed trades:** 0% win rate, total
+−$2.51, expectancy **−$0.6275**/trade, profit factor 0.000, largest loss −$0.79.
+**Every one of the four exited on `security_liquidity_withdrawn`** — the
+population rugging, caught by the exit engine, journalled end to end.
+
+**Two more defects found on the way, both older ones wearing a new place.**
+
+*The collector discarded everything `monitor.consider()` returned*, so the last
+decision in the pipeline — why a candidate that cleared every gate did not become
+a position — was the single step this project did not journal. A cycle that
+opened nothing was indistinguishable from a cycle where nothing qualified.
+`CycleSummary` now carries `opened` and `entry_skips`, both journalled and
+printed.
+
+*And the ELIGIBLE-only filter that this file credits with keeping the paper book
+empty was still there, one layer up.* `MonitorConfig.accepted_statuses` was
+widened to admit MONITOR — 52 mints cleared every gate across 18,846 journalled
+and 49 of them were MONITOR — but the collector went on building its candidate
+list from ELIGIBLE alone, so **the documented fix never reached the live path**.
+It also shut the launchpad feed out of the book completely: `SafetyEngine`
+assigns MONITOR, never ELIGIBLE, to a clean SOLANA_LAUNCH token, so only the
+movers feed could ever open a position. The collector now *offers* both statuses
+and `consider()` still *decides*, keeping one implementation of the admission
+rule. Operator decision 2026-08-18, taken explicitly rather than inherited: the
+intent recorded in this file is what runs.
+
+No gate moved and no threshold changed in any of this. What changed is that
+three limits which were configured but unreachable now actually run, and the
+book's own decisions are journalled.
+
+**The operating consequence: the book holds 2 positions, not 5.** CLAUDE.md
+records "$10 per position ... caps the book at 5 concurrent", which assumed 100%
+of equity could be open. The config says 50%, and the count cap says 2. The
+operator chose on 2026-08-18 to keep the 50% cap rather than raise it, so the
+real ceiling is **2 concurrent $10 positions, $20 of $50 at risk**. That makes
+the shot-count problem worse, not better — capturing a p≈5.8% tail wants ~50
+attempts — and that is a known, chosen cost, not an oversight.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:
@@ -400,13 +516,21 @@ that needs the collector to run.
 
 Live execution unlocks only when **all** hold, computed not judged:
 
-| Requirement | Status 2026-08-03 |
+Read from the journal by `scripts/report_track_record.py`, not maintained by
+hand. The forward column is the live paper book; the backtest column is what the
+studies measured.
+
+| Requirement | Forward record 2026-08-18 |
 |---|---|
-| >= 30 complete forward trades | **0** |
-| positive expectancy after costs | no — negative at every timeframe |
-| profit factor > 1.2 | no — best measured 0.794 |
-| no single trade > 1/3 of profit | no — 79-100% |
+| >= 30 complete forward trades | **3** |
+| positive expectancy after costs | no — **−$0.7353** per trade |
+| profit factor > 1.2 | no — **0.000**, zero winners |
+| no single trade > 1/3 of profit | passes vacuously — there is no profit |
 | drawdown within limit | not reached |
+
+All three closes were `security_liquidity_withdrawn`. A 0% win rate at n=3 says
+almost nothing on its own; what it does confirm is that the exit engine fires on
+a real rug and that the round trip is journalled end to end.
 
 Failing this is not a reason to look for a more aggressive strategy. It is a
 reason to keep collecting until the answer is unambiguous.

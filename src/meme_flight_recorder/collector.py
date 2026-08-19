@@ -100,6 +100,14 @@ class CycleSummary:
     errors: tuple[str, ...] = ()
     status_counts: dict[str, int] = field(default_factory=dict)
     failure_counts: dict[str, int] = field(default_factory=dict)
+    # What the paper book did with the candidates that cleared every gate.
+    # `consider()` returned these and the result was discarded, so the last
+    # decision in the pipeline -- why a fully-cleared candidate did not become a
+    # position -- was the one step this project did not journal. Zero opens then
+    # reads as "nothing qualified" when it may mean "the exposure cap held",
+    # which is the same absent-is-not-zero error the studies keep finding.
+    opened: int = 0
+    entry_skips: dict[str, int] = field(default_factory=dict)
 
 
 class Collector:
@@ -150,7 +158,16 @@ class Collector:
         errors: list[str] = []
         status_counts: dict[str, int] = {}
         failure_counts: dict[str, int] = {}
-        eligible: list[dict[str, Any]] = []
+        # Candidates handed to the paper book. Named for what it holds rather
+        # than for one of the statuses in it: `MonitorConfig.accepted_statuses`
+        # is the single place that decides which of them may open, and filtering
+        # here first silently overrode it. That is what happened -- this list
+        # took ELIGIBLE only, so the documented fix admitting MONITOR (52 mints
+        # cleared every gate across 18,846 journalled; 49 were MONITOR) never
+        # reached the live path and sat inert one layer down. It also meant the
+        # launchpad feed could never reach the book at all: `SafetyEngine`
+        # assigns MONITOR, never ELIGIBLE, to a clean SOLANA_LAUNCH token.
+        offered: list[dict[str, Any]] = []
 
         # Held positions are managed *before* discovery, so a failing feed can
         # never stop a position being exited. A monitor that only ran after a
@@ -167,8 +184,11 @@ class Collector:
             status_counts[status] = status_counts.get(status, 0) + 1
             for failure in failures:
                 failure_counts[failure] = failure_counts.get(failure, 0) + 1
-            if status == CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value:
-                eligible.append(candidate)
+            if status in (
+                CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,
+                CandidateStatus.MONITOR.value,
+            ):
+                offered.append(candidate)
 
         if self.movers_provider is not None:
             # Established movers. This is the population the deep-pool filter was
@@ -239,9 +259,12 @@ class Collector:
                     errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
                     continue
 
-        if self.monitor is not None and eligible:
+        opened = 0
+        entry_skips: dict[str, int] = {}
+        if self.monitor is not None and offered:
             try:
-                self.monitor.consider(eligible)
+                opened, entry_skips, entry_errors = self.monitor.consider(offered)
+                errors.extend(entry_errors)
             except Exception as error:  # noqa: BLE001
                 errors.append(f"monitor_entry: {type(error).__name__}: {error}")
 
@@ -255,6 +278,8 @@ class Collector:
             errors=tuple(errors),
             status_counts=status_counts,
             failure_counts=failure_counts,
+            opened=opened,
+            entry_skips=entry_skips,
         )
         self.recorder.append(
             EVENT_CYCLE_COMPLETED,
@@ -265,6 +290,8 @@ class Collector:
                 "recorded": recorded,
                 "status_counts": status_counts,
                 "failure_counts": failure_counts,
+                "opened": opened,
+                "entry_skips": entry_skips,
                 "errors": list(errors),
             },
         )

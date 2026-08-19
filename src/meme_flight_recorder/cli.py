@@ -172,7 +172,16 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
 
     Paper only, and there is no execution path here at all -- not a disabled one.
     A candidate that clears every gate becomes a journalled WATCH, because every
-    shipped `readiness_policy` is empty and widening one requires a study.
+    shipped `[strictness.*].readiness_policy` is empty and widening one requires
+    a study.
+
+    That is true of *this* command only. Two different fields share the name:
+    `StrictnessLevel.readiness_policy` (a tuple of state names, read from TOML,
+    empty on all three levels) gates the scout, while
+    `MonitorConfig.readiness_policy` (a `ReadinessPolicy`, set in code) gates the
+    collector -- and `collect --paper-trade` passes
+    `ReadinessPolicy.permissive_for_deep_pools()`, so that path does open
+    positions. Do not read this docstring as a claim about the whole system.
     """
     from .confluence import ConfluenceEvidence
     from .notify import configured as telegram_configured
@@ -731,6 +740,12 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             f"rejected={summary.rejected} | top: {reasons}",
             flush=True,
         )
+        if summary.opened or summary.entry_skips:
+            skips = ", ".join(
+                f"{name}={count}"
+                for name, count in sorted(summary.entry_skips.items(), key=lambda i: -i[1])[:3]
+            ) or "none"
+            print(f"  book: opened={summary.opened} | skips: {skips}", flush=True)
         for error in summary.errors[:3]:
             print(f"  error: {error}", flush=True)
 

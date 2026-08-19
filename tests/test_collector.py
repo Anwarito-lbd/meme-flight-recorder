@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from meme_flight_recorder.config import (
     Settings,
 )
 from meme_flight_recorder.journal import FlightRecorder
+from meme_flight_recorder.models import CandidateStatus
 from meme_flight_recorder.providers.binance_web3 import (
     MemeRushRow,
     VendorClusterLabels,
@@ -184,6 +186,99 @@ class CollectorTests(unittest.TestCase):
         events = self.recorder.list_events(50, entity_id="collector")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event_type"], EVENT_CYCLE_COMPLETED)
+
+    def test_cycle_journals_what_the_book_did_with_its_entries(self):
+        """The last decision in the pipeline used to be the one that was discarded.
+
+        `monitor.consider()` returns (opened, skipped, errors) and the collector
+        threw all three away, so a cycle that opened nothing was indistinguishable
+        from a cycle where nothing qualified -- "the exposure cap held" versus "no
+        candidate was tradeable". This project has already misread an absent value
+        as a zero three times, so the keys are pinned here even on a cycle with no
+        book attached, where the honest answer is 0 and {}.
+        """
+        discovery = FakeDiscovery([_row("Mint1", CLEAN_LABELS)])
+        summary = self._collector(discovery).run_once()
+
+        self.assertEqual(summary.opened, 0)
+        self.assertEqual(summary.entry_skips, {})
+
+        events = self.recorder.list_events(50, entity_id="collector")
+        payload = json.loads(events[0]["payload_json"])
+        self.assertIn("opened", payload)
+        self.assertIn("entry_skips", payload)
+        self.assertEqual(payload["opened"], 0)
+        self.assertEqual(payload["entry_skips"], {})
+
+    def test_monitor_status_candidates_are_offered_to_the_book(self):
+        """The ELIGIBLE-only filter that kept the paper book empty, one layer up.
+
+        `MonitorConfig.accepted_statuses` was widened to admit MONITOR because 52
+        mints cleared every gate across 18,846 journalled and 49 of them were
+        MONITOR. That fix lived inside `consider()`, while the collector went on
+        handing it ELIGIBLE rows only -- so the widening never reached the live
+        path. It also shut the launchpad feed out of the book entirely, since
+        `SafetyEngine` assigns MONITOR and never ELIGIBLE to a clean
+        SOLANA_LAUNCH token.
+
+        The collector offers; `consider()` still decides. Grading is stubbed here
+        so the test pins the offering rule rather than the safety engine.
+        """
+        received: list[str] = []
+
+        class RecordingMonitor:
+            def manage_open(self):
+                return 0, 0, []
+
+            def consider(self, candidates):
+                received.extend(str(c.get("status")) for c in candidates)
+                return 0, {}, []
+
+        class MonitorStatusCollector(Collector):
+            def _grade(self, snapshot, **kwargs):
+                _status, _failures, candidate = super()._grade(snapshot, **kwargs)
+                # Both the returned status and the candidate's own field: the
+                # collector offers on the former and `consider()` reads the
+                # latter, and a fixture where they disagree would test neither.
+                candidate = dict(candidate, status=CandidateStatus.MONITOR.value)
+                return CandidateStatus.MONITOR.value, (), candidate
+
+        collector = MonitorStatusCollector(
+            self.settings,
+            self.recorder,
+            discovery=FakeDiscovery([_row("Mint1", CLEAN_LABELS)]),
+            config=self.config,
+            monitor=RecordingMonitor(),
+            clock=lambda: NOW,
+        )
+        collector.run_once()
+
+        self.assertEqual(received, [CandidateStatus.MONITOR.value])
+
+    def test_rejected_candidates_are_never_offered_to_the_book(self):
+        """Offering more statuses must not become offering every status."""
+        received: list[str] = []
+
+        class RecordingMonitor:
+            def manage_open(self):
+                return 0, 0, []
+
+            def consider(self, candidates):
+                received.extend(str(c.get("status")) for c in candidates)
+                return 0, {}, []
+
+        collector = Collector(
+            self.settings,
+            self.recorder,
+            discovery=FakeDiscovery([_row("BadMint", DIRTY_LABELS)]),
+            config=self.config,
+            monitor=RecordingMonitor(),
+            clock=lambda: NOW,
+        )
+        summary = collector.run_once()
+
+        self.assertEqual(summary.rejected, 1)
+        self.assertEqual(received, [])
 
     def test_journal_chain_stays_valid_after_collection(self):
         discovery = FakeDiscovery(

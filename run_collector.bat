@@ -17,6 +17,16 @@ REM                   every gate. Without it the collector observes only, which
 REM                   is what left the journal holding 40,000 observations and
 REM                   zero positions.
 REM
+REM --position-usd 10  the operator's 2026-08-15 sizing decision, chosen on cost:
+REM                   the round trip is 1.81% of a $10 position against 4.65% of
+REM                   $1.00 (the 2%-of-equity default this used to fall back to).
+REM                   Leaving it unset accumulated the forward record in the cost
+REM                   regime the $10 decision exists to escape.
+REM --max-open 5      a secondary backstop only. The binding limits live in
+REM                   config: [risk] maximum_open_positions = 2, and
+REM                   [risk.micro] maximum_aggregate_open_position_pct = 50, which
+REM                   is $25 of a $50 account. Expect the book to hold 2, not 5.
+REM
 REM Do not lower --delay. Pacing is derived from the provider's published rate
 REM limit; halving it exhausted Jupiter's quota and every candidate then failed
 REM closed on unknown route data.
@@ -37,6 +47,8 @@ echo [%date% %time%] --- collector starting --- >> "%LOGFILE%"
 .venv\Scripts\python.exe -m meme_flight_recorder.cli collect ^
   --source both ^
   --paper-trade ^
+  --position-usd 10.0 ^
+  --max-open 5 ^
   --interval 300 ^
   --limit 20 >> "%LOGFILE%" 2>&1
 echo [%date% %time%] --- exited with code %ERRORLEVEL%, restarting in 60s --- >> "%LOGFILE%"

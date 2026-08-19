@@ -8,6 +8,7 @@ do not break the older paper ledger that shares the same journal.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -485,3 +486,112 @@ def test_maturity_policy_cannot_admit_a_failed_candidate() -> None:
         )
         assert opened == 0
         assert skipped.get("hard_failure_recorded") == 1
+
+
+# ------------------------------------------------------------------- exposure
+#
+# Every test below failed before the portfolio state was wired in. The monitor
+# built `PortfolioState(equity_usd=...)` and nothing else, so `open_positions`
+# and `aggregate_open_risk_usd` were 0/0.0 on every call and *both* exposure
+# checks in the risk engine were unreachable. At $50 equity with $10 positions
+# the book could reach $100 open -- 200% of the account.
+
+
+def book_at_equity(
+    folder: str, equity_usd: float, maximum_open_positions: int | None = None
+) -> tuple[FlightRecorder, Any]:
+    """A journal plus settings pinned to a known equity.
+
+    Pinned rather than taken from `.env`, because the aggregate cap is a
+    percentage of equity and a test reading the operator's live balance would
+    change its own meaning the next time that balance is edited.
+    """
+    config_settings = replace(settings(), starting_equity_usd=equity_usd)
+    if maximum_open_positions is not None:
+        config_settings = replace(
+            config_settings,
+            risk=replace(config_settings.risk, maximum_open_positions=maximum_open_positions),
+        )
+    return recorder(folder), config_settings
+
+
+def sized_monitor(
+    book: FlightRecorder, config_settings: Any, position_usd: float, **config: Any
+) -> PositionMonitor:
+    config.setdefault("readiness_policy", ANY_MATURITY)
+    config.setdefault("position_usd_override", position_usd)
+    config.setdefault("maximum_open_positions", 10)
+    return PositionMonitor(
+        config_settings,
+        book,
+        FakePairProvider(),
+        config=MonitorConfig(**config),
+        clock=lambda: NOW,
+    )
+
+
+def test_position_count_cap_binds_within_a_single_cycle() -> None:
+    """`[risk] maximum_open_positions = 2` must actually stop the third entry.
+
+    The book cannot open its whole capacity in one pass: `live` grows as
+    positions open, so the state has to be rebuilt per candidate rather than
+    once per cycle.
+    """
+    with TemporaryDirectory() as folder:
+        book, config_settings = book_at_equity(folder, 50.0)
+        agent = sized_monitor(book, config_settings, 10.0)
+        candidates = [candidate(mint=f"MINT_{index}") for index in range(4)]
+        opened, skipped, errors = agent.consider(candidates)
+        assert opened == 2, (opened, skipped, errors)
+        assert skipped.get("risk:maximum_open_positions_reached") == 2, skipped
+
+
+def test_position_count_cap_counts_positions_held_from_earlier_cycles() -> None:
+    """Exposure is a property of the book, not of one cycle."""
+    with TemporaryDirectory() as folder:
+        book, config_settings = book_at_equity(folder, 50.0)
+        sized_monitor(book, config_settings, 10.0).consider(
+            [candidate(mint="MINT_0"), candidate(mint="MINT_1")]
+        )
+        assert len(open_positions(book)) == 2
+
+        later = sized_monitor(book, config_settings, 10.0)
+        opened, skipped, _ = later.consider([candidate(mint="MINT_2")])
+        assert opened == 0
+        assert skipped.get("risk:maximum_open_positions_reached") == 1, skipped
+
+
+def test_aggregate_exposure_cap_binds_on_dollars_not_on_count() -> None:
+    """The money cap, isolated from the count cap by raising the latter.
+
+    At $50 equity `maximum_aggregate_open_position_pct = 50.0` leaves $25 of
+    room, so the third $10 position must be refused even where the count would
+    still allow it.
+    """
+    with TemporaryDirectory() as folder:
+        book, config_settings = book_at_equity(folder, 50.0, maximum_open_positions=10)
+        agent = sized_monitor(book, config_settings, 10.0)
+        candidates = [candidate(mint=f"MINT_{index}") for index in range(3)]
+        opened, skipped, errors = agent.consider(candidates)
+        assert opened == 2, (opened, skipped, errors)
+        assert skipped.get("risk:aggregate_open_position_exceeded") == 1, skipped
+
+
+def test_pool_share_is_checked_against_the_size_that_actually_opens() -> None:
+    """An override replaces the engine's sizing, so approval must use it too.
+
+    `--position-usd` was applied *after* approval, so the pool-share and
+    aggregate checks ran against the engine's own (much smaller) number while a
+    far larger position opened. The comment in `consider()` says an override
+    replaces sizing and never approval; this is the test that makes it true.
+
+    $30 into a $5,500 pool is 0.545% of it, above the 0.5% ceiling.
+    """
+    with TemporaryDirectory() as folder:
+        book, config_settings = book_at_equity(folder, 90.0)
+        agent = sized_monitor(
+            book, config_settings, 30.0, minimum_pool_liquidity_usd=5_000.0
+        )
+        opened, skipped, _ = agent.consider([candidate(liquidity_usd=5_500.0)])
+        assert opened == 0
+        assert skipped.get("risk:order_too_large_for_pool") == 1, skipped
