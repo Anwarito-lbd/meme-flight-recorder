@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import statistics
 import time
 from collections import defaultdict
 from typing import Any
@@ -75,7 +76,10 @@ def first_observations(database_path: str) -> dict[str, dict[str, Any]]:
 
 
 def present_prices(
-    mints: list[str], chunk: int = 30, minimum_liquidity_usd: float = 0.0
+    mints: list[str],
+    chunk: int = 30,
+    minimum_liquidity_usd: float = 0.0,
+    use_median: bool = False,
 ) -> dict[str, float]:
     """Today's price per mint, from the deepest pair DexScreener reports.
 
@@ -91,10 +95,19 @@ def present_prices(
     into. Market capitalisation is not exit liquidity, and neither is a quote.
     With a floor set, a mint whose every pair is below it is simply absent from
     the result, which a caller should read as unsellable rather than unpriced.
+
+    `use_median` changes the tie-break when several pairs quote the same mint,
+    and defaults to False so existing callers are unchanged. Depth is the wrong
+    tie-break when venues disagree. Verified on a real mint 2026-08-19: pumpswap
+    said $0.001053, meteora $0.001071 and $0.001075, and orca said **$5.27** --
+    five thousand times higher, on the deepest pool of the four. Taking the
+    deepest turned a genuine 5.9x into 29,359x. Three independent venues agreeing
+    is stronger evidence than one venue's pool size, so the median wins.
     """
 
     prices: dict[str, float] = {}
     best_liquidity: dict[str, float] = {}
+    quotes: dict[str, list[float]] = {}
     for index in range(0, len(mints), chunk):
         batch = mints[index : index + chunk]
         # DexScreener publishes 300 requests/minute for this endpoint. Pacing is
@@ -116,11 +129,18 @@ def present_prices(
             liquidity = float((pair.get("liquidity") or {}).get("usd") or 0.0)
             if liquidity < minimum_liquidity_usd:
                 continue
+            quotes.setdefault(address, []).append(float(price))
             if address not in prices or liquidity >= best_liquidity.get(address, -1.0):
                 prices[address] = float(price)
                 best_liquidity[address] = liquidity
         if index % (chunk * 50) == 0:
             print(f"  priced {len(prices)} of {index + len(batch)} requested")
+    if use_median:
+        return {
+            address: statistics.median(values)
+            for address, values in quotes.items()
+            if values
+        }
     return prices
 
 

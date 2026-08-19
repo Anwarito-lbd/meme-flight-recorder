@@ -235,7 +235,12 @@ def main() -> int:
     # floor above. A mint whose only quoting pair holds four cents cannot be
     # sold into, so it is absent here and scored as a total loss below.
     prices = present_prices(
-        mints, minimum_liquidity_usd=args.minimum_exit_liquidity_usd
+        mints,
+        minimum_liquidity_usd=args.minimum_exit_liquidity_usd,
+        # Median across qualifying venues, not the deepest one. See the docstring:
+        # a single venue quoting 5,000x the other three won an outcome on pool
+        # size alone and turned a 5.9x into 29,359x.
+        use_median=True,
     )
 
     # A vanished pair is an outcome of 0.0, not a missing measurement. Dropping
