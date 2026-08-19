@@ -157,6 +157,88 @@ account-identifying and must not be committed.
 
 Not yet built — recorded here so the reasoning is not re-derived.
 
+### Execution bots and SDKs, 2026-08-19 — four rejects and one open question
+
+Five repos supplied by the operator. All inspected read-only; nothing cloned,
+installed or run.
+
+#### `solana-snipe-bot/Free-SolanaSniperBot-2026-MemecoinAutoTrader` — REJECT, DO NOT FUND
+
+The most important entry in this file. Its own README says:
+
+> "We generate a wallet for you. Send SOL and you're ready to go."
+
+**The private key is theirs.** Sending SOL to that wallet is sending it to an
+address someone else controls, which is a deposit, not a trade. There is no
+custody story to evaluate because there is no custody — the funds are simply
+somewhere else.
+
+The repo contains **no source code**: a README and one JavaScript file pointing at
+`meme-snipe.com`. Three commits. No licence. 131 stars against 5 forks, which is
+the inverse of the usual ratio for software people actually run. The marketing
+claims **"Audited & transparent"** while there is nothing published to audit —
+those two statements cannot both be true, and that contradiction is the tell.
+
+Rejected on step 2 (key custody), step 1 (nothing readable), step 3 (three
+commits) and step 4 (no licence) independently. Any one would be sufficient.
+
+#### `YZYLAB/solana-trade-bot` — REJECT
+
+`PRIVATE_KEY=your_wallet_private_key` in `.env`, executes buys and sells, routes
+through a paid Solana Tracker plan. MIT, 161 stars, 8 commits. Step 2 immediate
+reject: the invariant is about the capability existing at all, and better key
+handling is still key handling.
+
+#### `piotrostr/listen` — REJECT for import, credible project
+
+A real one: AGPL-3.0, Rust, 1.1k stars, 837 commits, actively maintained. It
+loads keypairs in `solana-keygen` format and signs and sends transactions, which
+is step 2. Beyond that it is Rust against a Python codebase, and its data layer —
+transaction monitoring, price tracking — duplicates what `providers/` already
+does. A capability already covered is a dependency and an attack surface for no
+gain.
+
+#### `santoshlite/memecoooins` — REJECT
+
+Not a research tool. It is a $50 "crypto roulette": the service generates a
+wallet per user, funds it, and allocates to **random** meme coins with hourly
+rebalancing. 4 stars, 0 forks, no licence, and **no documented selection
+methodology** — the randomness is the product. Nothing here to learn from and
+custody sits with the operator of the service.
+
+#### `nirholas/pump-fun-sdk` — EVALUATED, not adopted, and worth revisiting
+
+The only one of the five that clears the safety steps. Apache-2.0, 115 stars, 36
+forks, 3,707 commits, actively maintained. Third-party rather than official
+Pump.fun software. Its own claim, which the structure supports:
+
+> "Safe by construction. Reads never load a keypair. Every trade is simulated
+> before anything is sent."
+
+The SDK returns `TransactionInstruction[]` and never sends; the caller signs. The
+read-only surface — `pump quote buy|sell`, `pump curve`, `pump price`,
+`pump pool` — loads no key at all.
+
+**Why it is interesting here.** Jupiter cannot quote a token still on its bonding
+curve: there is no AMM pool to route through. That is structural, not a quota
+problem, and it is why pre-bond candidates carry `entry_route_unknown` and
+`entry_price_impact_unknown`. A curve quote would supply impact evidence exactly
+where Jupiter cannot.
+
+**Why it is not a straightforward yes.** This file's own prior decision reads:
+*"Deliberately not built: estimating price impact from constant-product maths
+against pool depth. It would make candidates pass, and would substitute an
+estimate for a quote inside a gate whose purpose is verifying a real executable
+route."* A `pump quote` reads actual on-chain curve state and applies the
+protocol's own pricing function, so it is closer to a real quote than to an
+estimate from depth — but it is still not a filled order, and adopting it would
+make candidates pass a gate they currently fail.
+
+**Decision: not adopted now.** Revisit only if a study gives a reason to care
+about pre-bond candidates. Wiring a TypeScript CLI into a Python codebase to make
+more candidates pass a gate, before any signal is shown to predict anything, is
+effort in the wrong order.
+
 ## Pending
 
 ### MobyAgent — NOT YET AUDITED
