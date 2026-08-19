@@ -200,9 +200,15 @@ class HeliusProvider:
         infrastructure. Resolving owners is what makes the pool subtractable, so
         a genuine private-holder concentration can be computed.
 
-        Two RPC calls regardless of holder count: the largest-accounts query,
-        then one batched account fetch. A per-account loop would be twenty calls
-        per candidate and would exhaust the free tier within a cycle.
+        **Three** RPC calls regardless of holder count: the largest-accounts
+        query, then one batched fetch to resolve token accounts to owners, then a
+        second batched fetch to read each owner's program so a keypair wallet can
+        be told from a protocol-controlled PDA. This said "two" until 2026-08-19,
+        having been written before the third call was added -- a caller pacing
+        itself on that number would have been under-delaying by a third.
+
+        Batched deliberately: a per-account loop would be twenty calls per
+        candidate and would exhaust the free tier within a cycle.
         """
         largest = self.rpc("getTokenLargestAccounts", [mint])
         accounts = (largest or {}).get("value") or []

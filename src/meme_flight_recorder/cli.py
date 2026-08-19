@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -183,6 +184,7 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     `ReadinessPolicy.permissive_for_deep_pools()`, so that path does open
     positions. Do not read this docstring as a claim about the whole system.
     """
+    from .clusters import adjusted_top_holder_pct
     from .confluence import ConfluenceEvidence
     from .notify import configured as telegram_configured
     from .notify import format_decision, send
@@ -190,6 +192,7 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     from .providers.birdeye import BirdeyeProvider
     from .providers.coingecko import CoinGeckoProvider
     from .providers.dexscreener import DexScreenerProvider
+    from .providers.helius import HeliusProvider
     from .providers.news import classify, judge_acceleration
     from .scout import CandidateEvidence, ScoutVerdict, evaluate, held_mints, journal_decision
 
@@ -284,7 +287,38 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     birdeye = BirdeyeProvider()
     coingecko = CoinGeckoProvider()
     dexscreener = DexScreenerProvider()
+
+    # Holder concentration, the single biggest discriminator this system has: it
+    # rejects 36 of 56 winners on the collector side, and GoPlus confirmed on 14
+    # real mints that those rejections are not false positives -- the tokens
+    # genuinely are that concentrated.
+    #
+    # Resolved from chain rather than from the vendor. `labels.top10_pct` is
+    # `None` for 0 of 18,717 journalled mints, and it is a *gross* figure that
+    # counts the AMM vault as a holder; writing it into a field named *adjusted*
+    # would be a weak number wearing a strong name.
+    #
+    # Degrades rather than guessing: without a key the signal stays UNKNOWN,
+    # which cannot help a candidate clear the confluence bar.
+    helius: Any | None = None
+    try:
+        helius = HeliusProvider()
+    except ValueError as error:
+        print(f"note: Helius unavailable ({error}); concentration stays UNKNOWN.")
+
+    def _concentration(mint: str) -> float | None:
+        """Adjusted top-10 concentration, or None when it cannot be established."""
+        if helius is None:
+            return None
+        try:
+            supply = float(helius.mint_evidence(mint).supply_raw)
+            holdings = helius.largest_holder_owners(mint)
+        except Exception:  # noqa: BLE001 - a dead provider must not pass a gate
+            return None
+        return adjusted_top_holder_pct(holdings, supply)
     first_candles: dict[str, tuple[float | None, float | None, float | None]] = {}
+    # Latest traded minute against its own baseline, from the same fetch.
+    volume_ratios: dict[str, float] = {}
     # Every failure is counted and named rather than swallowed. The first version
     # of this loop ended in a bare `except: continue` and printed "resolved 0 of
     # 25", which reads as "these tokens have no candles". The real cause was
@@ -296,13 +330,18 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     if not args.no_first_candle:
         print(f"\nresolving first traded minute for {len(rows)} mints...")
         for row in rows:
-            candle, source = _first_traded_candle(
+            candle, ratio, source = _first_traded_candle(
                 row.contract_address, row.created_at, birdeye, coingecko, dexscreener
             )
             sources[source] = sources.get(source, 0) + 1
             if candle is not None:
                 first_candles[row.contract_address] = candle
-        print(f"resolved {len(first_candles)} of {len(rows)}")
+            if ratio is not None:
+                volume_ratios[row.contract_address] = ratio
+        print(
+            f"resolved {len(first_candles)} of {len(rows)}"
+            f"; volume baseline for {len(volume_ratios)}"
+        )
         for reason, count in sorted(sources.items(), key=lambda kv: -kv[1]):
             print(f"  {reason:<26}{count:>5}")
         if not first_candles:
@@ -315,10 +354,35 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     previously_held = held_mints(recorder)
     print(f"\n{len(rows)} candidates; {len(previously_held)} mints previously held\n")
 
+    # Pacing, derived rather than guessed -- the same shape as
+    # `CollectorConfig.pacing_delay_seconds`, which exists because a flat delay
+    # was once justified by arithmetic that did not hold and gave 200 req/min
+    # against a 60 req/min allowance. Every 429 in this project traces to it.
+    #
+    # Cost per candidate here: `mint_evidence` is 1 RPC call and
+    # `largest_holder_owners` is 3 -- getTokenLargestAccounts, then two
+    # getMultipleAccounts to resolve token accounts to owners and owners to
+    # their programs.
+    rpc_calls_per_candidate = 4 if helius is not None else 0
+    target_rpc_per_minute = 60.0
+    candidate_delay_seconds = (
+        rpc_calls_per_candidate / (target_rpc_per_minute / 60.0)
+        if rpc_calls_per_candidate
+        else 0.0
+    )
+    if candidate_delay_seconds:
+        print(
+            f"pacing: {candidate_delay_seconds:.1f}s per candidate "
+            f"({rpc_calls_per_candidate} RPC calls at {target_rpc_per_minute:.0f}/min)"
+        )
+
     verdicts: dict[str, int] = {}
     reasons: dict[str, int] = {}
     alerts: dict[str, int] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
+        # `if index` so the first candidate is not delayed for no reason.
+        if index and candidate_delay_seconds:
+            time.sleep(candidate_delay_seconds)
         age_hours = None if row.age_minutes is None else row.age_minutes / 60.0
         first_candle = first_candles.get(row.contract_address, (None, None, None))
         # The narrative line is the article. `classify` already encodes the
@@ -349,6 +413,15 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
                 # which is not the same as a narrative with no flow. `.get`
                 # returns None and the signal resolves UNKNOWN.
                 topic_net_inflow_1h_usd=topic_inflow_by_mint.get(row.contract_address),
+                # In hand already, no extra call. Scored as a band rather than a
+                # ceiling: a developer who has fully exited holds no supply left
+                # to dump and measured safest across 871 mints, 7% dead against
+                # 28% for one who had sold nothing.
+                developer_sold_pct=row.labels.dev_sell_pct,
+                adjusted_top_holder_pct=_concentration(row.contract_address),
+                # Absent means no baseline was measurable, not an expansion of
+                # 1.0x. `.get` returns None and the signal stays UNKNOWN.
+                volume_ratio_to_baseline=volume_ratios.get(row.contract_address),
             ),
             # Social evidence the vendor already supplies, and the local model's
             # reading of it. Journalled, never gating: `evaluate` reads the four
@@ -436,13 +509,41 @@ def _safe(text: str, width: int = 12) -> str:
     return cleaned[:width]
 
 
+# Baseline window for volume expansion, matching `strategy.detect_breakout`.
+BASELINE_CANDLES = 20
+# Below this many prior traded minutes there is no baseline, only noise.
+MINIMUM_BASELINE_CANDLES = 5
+
+
+def _volume_ratio(volumes: list[float]) -> float | None:
+    """Latest traded minute against the mean of the minutes before it.
+
+    Matches the baseline idiom already in `strategy.detect_breakout`, which takes
+    a 20-candle mean rather than inventing a second definition of "normal".
+
+    Returns None rather than 1.0 when there is too little history. A token with
+    four traded minutes has no baseline, and answering 1.0 would report "no
+    expansion" -- a measurement -- where the truth is that nothing was measured.
+    Under-length is exactly the case this population produces: 13 of 21 sampled
+    tokens had fewer than 30 traded candles.
+    """
+    if len(volumes) < MINIMUM_BASELINE_CANDLES + 1:
+        return None
+    latest = volumes[-1]
+    baseline_window = volumes[-(BASELINE_CANDLES + 1) : -1]
+    baseline = sum(baseline_window) / len(baseline_window)
+    if baseline <= 0:
+        return None
+    return round(latest / baseline, 4)
+
+
 def _first_traded_candle(
     mint: str,
     created_at: Any,
     birdeye: Any,
     coingecko: Any,
     dexscreener: Any,
-) -> tuple[tuple[float | None, float | None, float | None] | None, str]:
+) -> tuple[tuple[float | None, float | None, float | None] | None, float | None, str]:
     """The first minute anyone actually traded, and how it was obtained.
 
     Two sources, tried in order, because one of them is a budget that runs out.
@@ -451,12 +552,18 @@ def _first_traded_candle(
     a mint where a pool is expected returns HTTP 404, which is the defect that
     silently removed 12 of 22 tokens from a backtest earlier today.
 
-    Returns `(None, reason)` when neither source can answer. That is UNKNOWN, and
-    UNKNOWN blocks: a token whose first minute cannot be seen has not been shown
-    to be calm.
+    Returns `(None, None, reason)` when neither source can answer. That is
+    UNKNOWN, and UNKNOWN blocks: a token whose first minute cannot be seen has
+    not been shown to be calm.
+
+    The volume ratio comes back from the same fetch. The candle series was
+    previously read for its first row and thrown away, so `volume_expansion` --
+    the one chart signal whose threshold the mandate sets per level, at 3x / 2x /
+    1.5x -- was UNKNOWN on every candidate while the data to resolve it had
+    already been paid for.
     """
     if created_at is None:
-        return None, "no_created_at"
+        return None, None, "no_created_at"
 
     start = int(created_at.timestamp())
     if getattr(birdeye, "configured", False):
@@ -473,13 +580,18 @@ def _first_traded_candle(
             if "Compute units" in f"{error} {body}" or "usage limit" in f"{error} {body}":
                 pass  # quota exhausted; fall through to CoinGecko
             else:
-                return None, f"birdeye_{type(error).__name__}"
+                return None, None, f"birdeye_{type(error).__name__}"
             series = None
         if series is not None:
             traded = series.trades_only
             if traded:
                 first = traded[0]
-                return (first.open, first.high, first.volume), "birdeye"
+                volumes = [c.volume for c in traded if c.volume is not None]
+                return (
+                    (first.open, first.high, first.volume),
+                    _volume_ratio(volumes),
+                    "birdeye",
+                )
 
     pair = None
     try:
@@ -487,20 +599,28 @@ def _first_traded_candle(
     except Exception:  # noqa: BLE001 - no pool means no fallback, reported as such
         pair = None
     if pair is None or not pair.pair_address:
-        return None, "no_quoted_pool"
+        return None, None, "no_quoted_pool"
     try:
         payload = coingecko.pool_ohlcv(
             pair.pair_address, aggregate=1, limit=200, timeframe="minute"
         )
     except Exception as error:  # noqa: BLE001
-        return None, f"coingecko_{type(error).__name__}"
+        return None, None, f"coingecko_{type(error).__name__}"
     rows = ((payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
     # A candle with no volume is not a price, whichever provider served it.
     traded_rows = [row for row in rows if row[5]]
     if not traded_rows:
-        return None, "no_traded_candle"
-    first = min(traded_rows, key=lambda row: row[0])
-    return (first[1], first[2], first[5]), "coingecko"
+        return None, None, "no_traded_candle"
+    ordered = sorted(traded_rows, key=lambda row: row[0])
+    first = ordered[0]
+    # Sorted oldest-first before taking the ratio: GeckoTerminal returns newest
+    # first, and reading it in wire order would compare the *oldest* minute
+    # against a baseline drawn from the future.
+    return (
+        (first[1], first[2], first[5]),
+        _volume_ratio([float(row[5]) for row in ordered]),
+        "coingecko",
+    )
 
 
 def _buy_share_pct(buy_count: int | None, sell_count: int | None) -> float | None:

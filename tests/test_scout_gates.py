@@ -136,3 +136,48 @@ class TestBlocking:
             check_token_age(1.0, 48.0),
         )
         assert blocking(verdicts) == ()
+
+
+class TestVolumeBaseline:
+    """`volume_ratio_to_baseline` from candles the scout already pays for.
+
+    The candle series was fetched, read for its first row and discarded, so
+    `volume_expansion` -- the one chart signal whose threshold the mandate sets
+    per level (3x / 2x / 1.5x) -- was UNKNOWN on every candidate while the data
+    to resolve it was already in hand.
+    """
+
+    def test_a_quiet_token_reads_near_one(self):
+        from meme_flight_recorder.cli import _volume_ratio
+
+        assert _volume_ratio([100.0] * 25) == 1.0
+
+    def test_a_spike_reads_as_expansion(self):
+        from meme_flight_recorder.cli import _volume_ratio
+
+        # Twenty quiet minutes, then one at triple.
+        assert _volume_ratio([100.0] * 20 + [300.0]) == 3.0
+
+    def test_too_little_history_is_none_not_one(self):
+        """A token with four traded minutes has no baseline.
+
+        Returning 1.0 would report "no expansion" -- a measurement -- where the
+        truth is that nothing was measured. 13 of 21 sampled tokens had fewer
+        than 30 traded candles, so this is the common case, not the edge.
+        """
+        from meme_flight_recorder.cli import _volume_ratio
+
+        assert _volume_ratio([100.0] * 4) is None
+        assert _volume_ratio([]) is None
+
+    def test_a_zero_baseline_is_none_not_a_division_error(self):
+        from meme_flight_recorder.cli import _volume_ratio
+
+        assert _volume_ratio([0.0] * 20 + [50.0]) is None
+
+    def test_the_baseline_excludes_the_candle_being_measured(self):
+        """Including the latest minute in its own baseline damps every spike."""
+        from meme_flight_recorder.cli import _volume_ratio
+
+        ratio = _volume_ratio([10.0] * 20 + [1000.0])
+        assert ratio == 100.0

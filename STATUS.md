@@ -577,6 +577,79 @@ evidence, so the ceiling on recovery is real but unproven forward. The remaining
 gaps — `entry_route_unknown` and the three impact reasons, 6,362 mints each —
 are the Jupiter quota and are a separate fix.
 
+## 2026-08-19: the scout's confluence count doubled, and levels 1-2 became reachable
+
+The mandate needs 4 / 3 / 2 confluence signals by level. `ConfluenceEvidence` has
+fourteen fields and the scout filled **four**, so over 28 decisions only **three**
+signals had ever been PRESENT. **Level 1 had never been satisfiable and Level 2
+required a clean sweep** — the system could only run in its most aggressive mode,
+the opposite of what the mandate intends.
+
+Three signals were resolvable from evidence the repo already fetched or already
+computed. None of them is new measurement; all three were plumbing.
+
+| signal | source | result on live runs |
+|---|---|---|
+| `developer_not_distributing` | `row.labels.dev_sell_pct`, already in hand, zero extra calls | PRESENT 7-8 of 8 |
+| `concentration_acceptable` | `clusters.adjusted_top_holder_pct` via Helius, function already written and tested | PRESENT 3-4 of 8 |
+| `volume_expansion` | the candle series the scout already fetched and discarded | resolves on 2 of 8 |
+
+**Measured: unknown signals per candidate 11 -> 9, and a candidate reached 5 of
+the 3 required.** Level 2 is satisfied for the first time in the project's
+history, and Level 1 (needs 4) is now reachable.
+
+### The developer signal was a ceiling wearing a band's documentation
+
+Found while wiring it. `confluence.py` carried a comment reading *"this is a
+ceiling on the middle band rather than a preference for zero selling"* and a
+`detail` string reading *"band gate: full exit is safer than no exit"* — over
+`_maximum(..., 1.0)`, a plain ceiling with **no upper bound at all**. The comment
+described an implementation that was never written.
+
+It survived because `developer_sold_pct` was always `None`, so the verdict was
+UNKNOWN and the number was never read. Wiring the field without fixing it would
+have marked the *safest* tokens ABSENT: across 871 mints a developer who had
+fully exited died **7%** of the time against **28%** for one who had sold
+nothing. That is the same inversion the deployer gate already had once and was
+fixed for — the fourth place this rule has been written, and the reason the
+verdict now delegates to `deployer.developer_is_distributing` rather than
+re-deriving the band. A test asserts the two agree across nine values.
+
+### What is still UNKNOWN, and why it is the population rather than a gap
+
+Nine signals remain unresolved, and the reasons are now specific:
+
+- **`spread_pct`** — nothing in the repo supplies bid/ask. Would need two Jupiter
+  quotes differenced.
+- **`qualified_whale_holders`** — no implementation and no definition of
+  "qualified"; wallet coverage is 0.17-12.07% of a wallet's transactions.
+- **`narrative_accelerating`** — resolves, but launchpad and narrative mints have
+  zero measured overlap.
+- **`bonding_curve_accelerating`** — defined as a rate from successive
+  observations; `progress_pct / age_minutes` is an average since launch, which is
+  a different quantity. Cheap-and-wrong is worse than absent.
+- **The five chart signals** — `detect_breakout` needs 22 fifteen-minute candles
+  (5.5h) and the trend filter needs 51 hourly candles against a 48-hour age cap.
+  `higher_low_formed` and `vwap_reclaimed` have no implementation at all.
+
+`volume_expansion` resolving on only 2 of 8 is the same story: most tokens have
+too few traded minutes for a baseline, and the helper returns `None` rather than
+1.0 — reporting "no expansion" where nothing was measured is the error this
+project keeps catching.
+
+### Scout pacing now exists
+
+The scout had none. Helius costs 4 RPC calls per candidate — `mint_evidence`
+plus three inside `largest_holder_owners` — and the delay is derived from that
+call cost against a 60/min target, the same shape as
+`CollectorConfig.pacing_delay_seconds`. The docstring claiming "two RPC calls"
+predated the third call and was corrected; a caller pacing on it would have
+under-delayed by a third.
+
+Five third-party candidates were audited the same day and recorded in
+`docs/third-party-audit.md` — one adopt (Solana Tracker, scout-only, budget
+arithmetic in the entry), four reject.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:

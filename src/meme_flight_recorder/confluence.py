@@ -41,6 +41,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+# The one dependency this module takes, and it is a pure function over two
+# numbers. `developer_is_distributing` is documented as the single source of
+# truth for that question after the same rule was written three times and fixed
+# in only two of them; re-deriving the band here would be the fourth.
+from .config import DeployerLimits
+from .deployer import developer_is_distributing
+
 
 class SignalState(StrEnum):
     PRESENT = "present"
@@ -167,6 +174,40 @@ def _maximum(
     return SignalVerdict(signal, state, value, ceiling, detail)
 
 
+def _developer_verdict(
+    dev_sold_pct: float | None, lower: float, upper: float
+) -> SignalVerdict:
+    """PRESENT when the developer is not distributing, by the measured band.
+
+    This is a band and not a ceiling, and the difference is the whole finding:
+    across 871 mints a developer who had **fully exited** died 7% of the time
+    against 28% for one who had sold nothing. Holding no supply means having
+    nothing left to dump. What is dangerous is the middle -- still holding, and
+    selling into the buyers the launch attracted.
+
+    A plain ceiling marks the safest state ABSENT. This module carried a comment
+    saying it was "a ceiling on the middle band" and a detail string reading
+    "band gate", while the code underneath was `_maximum` with no upper bound at
+    all. The mismatch survived because the field was always None, so the verdict
+    was UNKNOWN and nobody read the number.
+    """
+    if dev_sold_pct is None:
+        return SignalVerdict(
+            Signal.DEVELOPER_NOT_DISTRIBUTING, SignalState.UNKNOWN, None, lower, "no value"
+        )
+    distributing = developer_is_distributing(
+        dev_sold_pct, DeployerLimits(maximum_dev_sell_pct=lower, exhausted_dev_sell_pct=upper)
+    )
+    state = SignalState.ABSENT if distributing else SignalState.PRESENT
+    return SignalVerdict(
+        Signal.DEVELOPER_NOT_DISTRIBUTING,
+        state,
+        dev_sold_pct,
+        lower,
+        f"band {lower}-{upper}%: full exit is safer than no exit",
+    )
+
+
 @dataclass(frozen=True)
 class ConfluenceEvidence:
     """What a caller managed to fetch. Every field defaults to None.
@@ -219,6 +260,7 @@ def score(
     minimum_volume_usd: float,
     maximum_concentration_pct: float,
     maximum_developer_sold_pct: float,
+    exhausted_developer_sold_pct: float,
     minimum_bonding_progress_per_minute: float,
     minimum_topic_inflow_usd: float,
     minimum_buy_share_pct: float,
@@ -238,15 +280,10 @@ def score(
             evidence.adjusted_top_holder_pct,
             maximum_concentration_pct,
         ),
-        # A developer who has fully exited holds no supply left to dump, which
-        # measured as the *safest* state across 871 mints: 7% death against 28%
-        # for developers who had sold nothing. So this is a ceiling on the middle
-        # band rather than a preference for zero selling.
-        _maximum(
-            Signal.DEVELOPER_NOT_DISTRIBUTING,
+        _developer_verdict(
             evidence.developer_sold_pct,
             maximum_developer_sold_pct,
-            detail="band gate: full exit is safer than no exit",
+            exhausted_developer_sold_pct,
         ),
         _minimum(
             Signal.BONDING_CURVE_ACCELERATING,

@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from .config import ScoutFilters, StrictnessLevel
+from .config import DeployerLimits, ScoutFilters, StrictnessLevel
 from .confluence import ConfluenceEvidence, ConfluenceResult, SignalState, score
 from .journal import FlightRecorder
 from .scout_gates import (
@@ -219,10 +219,15 @@ def evaluate(
         minimum_liquidity_usd=filters.minimum_liquidity_usd,
         maximum_spread_pct=filters.maximum_spread_pct,
         minimum_volume_usd=filters.minimum_volume_usd,
-        # These four come from the safety config rather than the questionnaire, so
-        # the scout cannot loosen a gate the rest of the system enforces.
+        # These come from the safety config rather than the questionnaire, so the
+        # scout cannot loosen a gate the rest of the system enforces.
         maximum_concentration_pct=30.0,
-        maximum_developer_sold_pct=1.0,
+        # Both bounds of the developer band, taken from `DeployerLimits` rather
+        # than written as literals here -- the band is 1% to 50% because that is
+        # what 871 mints measured, and a second copy of those numbers is how the
+        # same rule ended up with three implementations before.
+        maximum_developer_sold_pct=DeployerLimits().maximum_dev_sell_pct,
+        exhausted_developer_sold_pct=DeployerLimits().exhausted_dev_sell_pct,
         minimum_bonding_progress_per_minute=0.5,
         minimum_topic_inflow_usd=1_000.0,
         minimum_buy_share_pct=55.0,

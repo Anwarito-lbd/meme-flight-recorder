@@ -36,6 +36,7 @@ THRESHOLDS = {
     "minimum_volume_usd": 10_000.0,
     "maximum_concentration_pct": 30.0,
     "maximum_developer_sold_pct": 1.0,
+    "exhausted_developer_sold_pct": 50.0,
     "minimum_bonding_progress_per_minute": 1.0,
     "minimum_topic_inflow_usd": 5_000.0,
     "minimum_buy_share_pct": 60.0,
@@ -160,3 +161,67 @@ class TestVerdictCounts:
         assert empty.reconciles()
         assert not empty.meets(1)
         assert empty.present_count == 0
+
+
+class TestDeveloperBand:
+    """The signal is a band, not a ceiling, and the difference is the finding.
+
+    Across 871 mints a developer who had **fully exited** died 7% of the time
+    against 28% for one who had sold nothing: holding no supply means having
+    nothing left to dump. What is dangerous is the middle -- still holding, and
+    selling into the buyers the launch attracted.
+
+    Before 2026-08-19 this module carried a comment describing exactly that band
+    and a detail string reading "band gate", over an implementation that was a
+    plain `_maximum` with no upper bound. The mismatch survived because
+    `developer_sold_pct` was always None, so the verdict was UNKNOWN and the
+    number was never read.
+    """
+
+    def verdict(self, dev_sold_pct):
+        result = score(
+            ConfluenceEvidence(developer_sold_pct=dev_sold_pct), **THRESHOLDS
+        )
+        return next(
+            v for v in result.verdicts if v.signal is Signal.DEVELOPER_NOT_DISTRIBUTING
+        )
+
+    def test_a_developer_who_never_sold_is_present(self):
+        assert self.verdict(0.0).state is SignalState.PRESENT
+
+    def test_a_developer_who_fully_exited_is_present(self):
+        """The state the data says is safest must not read as a failure."""
+        assert self.verdict(80.0).state is SignalState.PRESENT
+
+    def test_a_developer_selling_into_the_buyers_is_absent(self):
+        assert self.verdict(25.0).state is SignalState.ABSENT
+
+    def test_dust_is_not_distribution(self):
+        """One candidate was once rejected on 1.47e-08 percent of supply."""
+        assert self.verdict(1.47e-08).state is SignalState.PRESENT
+
+    def test_unknown_stays_unknown_and_cannot_help(self):
+        assert self.verdict(None).state is SignalState.UNKNOWN
+        result = score(ConfluenceEvidence(developer_sold_pct=None), **THRESHOLDS)
+        assert Signal.DEVELOPER_NOT_DISTRIBUTING in {
+            v.signal for v in result.verdicts if v.state is SignalState.UNKNOWN
+        }
+
+    def test_the_verdict_agrees_with_the_single_source_of_truth(self):
+        """The rule must not acquire a fourth implementation.
+
+        `developer_is_distributing` is the one place this question is answered;
+        it previously existed in three copies and fixing two left the third
+        rejecting live candidates on floating-point dust.
+        """
+        from meme_flight_recorder.config import DeployerLimits
+        from meme_flight_recorder.deployer import developer_is_distributing
+
+        limits = DeployerLimits(
+            maximum_dev_sell_pct=THRESHOLDS["maximum_developer_sold_pct"],
+            exhausted_dev_sell_pct=THRESHOLDS["exhausted_developer_sold_pct"],
+        )
+        for value in (0.0, 0.5, 1.0, 1.5, 25.0, 49.9, 50.0, 80.0, 100.0):
+            distributing = developer_is_distributing(value, limits)
+            expected = SignalState.ABSENT if distributing else SignalState.PRESENT
+            assert self.verdict(value).state is expected, value

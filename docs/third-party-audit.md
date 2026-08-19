@@ -131,6 +131,32 @@ which makes it reachable at post-gate volume (~$6/month) and ruinous at feed
 volume (10,000 reads = $50 = the whole account). **The operator has declined to
 pay for it.** Recorded as a decision, not an open question.
 
+### Solana data and execution candidates, 2026-08-19 — one adopt, four reject
+
+Five candidates supplied by the operator, all inspected read-only against the
+protocol above. Nothing was cloned, installed or pinned.
+
+| Candidate | Verdict | Decisive reason |
+|---|---|---|
+| **Solana Tracker Data API** | **ADOPT, scout only** | Official hosted API. No code enters the tree; it is an HTTP call. Free tier **10,000 req/month at 3 req/s**, covering risk scores, holder analytics and wallet analytics — the evidence the movers feed lacks. |
+| `paoloanzn/free-solscan-api` | REJECT | Reverse-engineered client for Solscan's *internal website* API, which the README concedes is "not officially supported for external use". **Archived 2026-08-03** — Solscan now serves Cloudflare challenges and it no longer functions. Fails step 3 on maintenance, and works by circumventing a provider's protections. |
+| `jup-ag/jupiter-swap-api-client` | REJECT | Clean on safety: official, and it never touches keys — it returns unsigned transaction bytes. Rejected on **step 5** instead. It is Rust against a Python 3.12 codebase; its quote capability is already covered by `JupiterQuoteProvider`; and `/swap` plus `/swap-instructions` add transaction *building*, the one capability the paper-only invariant exists to exclude. A capability already covered is a dependency and an attack surface for no gain. |
+| `solanatracker/raptor-binary` | REJECT | "This is a closed-source project. The repository hosts binary releases only." Step 1 is *read, do not clone*; a binary cannot be read at all. It **submits** transactions via Yellowstone Jet TPU and accepts `--jet-identity <PATH>`, a keypair path. 13 stars, 2 forks, no licence. Running an unauditable binary that can submit transactions, on the machine holding trading capital, is what the protocol exists to prevent. |
+| `kukapay/crypto-feargreed-mcp` | REJECT the wrapper | Clean on every safety step — MIT, no credentials, no key handling, no execution. But it is an **MCP server**, and the collector is a headless Python loop that cannot call one. Underneath it is `alternative.me`'s Fear & Greed API: free, keyless, one GET. Taking a dependency to wrap a single GET fails step 5; use the source directly if the signal is ever wanted. |
+| Instrumetriq / browser extensions | REJECT, structurally | A browser extension runs inside a browser. The collector is unattended and has none. No integration path exists, whatever the extension's quality. |
+
+**Where Solana Tracker may be used, and why not in the collector.** At ~144
+cycles/day x 73 candidates the collector grades roughly **10,500 candidates per
+day**, against a monthly allowance of 10,000 — less than one day of collection.
+Even restricted to candidates clearing every gate (~21/cycle) it needs ~3,000/day,
+still 9x over. So it is a **scout-only** provider, with a hard daily budget as a
+no-default config field, a counter on the provider instance checked *before* the
+call, and pacing derived from the 3 req/s limit. `SOLANATRACKER_API_KEY` goes in
+`.env` by the operator's own hand. The account's private endpoint hostname is
+account-identifying and must not be committed.
+
+Not yet built — recorded here so the reasoning is not re-derived.
+
 ## Pending
 
 ### MobyAgent — NOT YET AUDITED
