@@ -151,6 +151,18 @@ def main() -> int:
     parser.add_argument("--position-usd", type=float, default=10.0)
     parser.add_argument("--equity-usd", type=float, default=50.0)
     parser.add_argument("--verdict-cache", default="data/narrative_verdicts.db")
+    parser.add_argument(
+        "--minimum-entry-liquidity-usd",
+        type=float,
+        default=5_000.0,
+        help="tradeable-pool floor at observation; matches study_winner_recall",
+    )
+    parser.add_argument(
+        "--minimum-exit-liquidity-usd",
+        type=float,
+        default=1_000.0,
+        help="a pair below this cannot be sold into, so it is not a price",
+    )
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
 
@@ -164,7 +176,7 @@ def main() -> int:
 
     now = datetime.now(UTC)
     mature: dict[str, dict[str, Any]] = {}
-    too_young = no_entry_price = 0
+    too_young = no_entry_price = untradeable = 0
     for mint, payload in observations.items():
         try:
             seen = datetime.fromisoformat(str(payload["observed_at"]))
@@ -176,6 +188,14 @@ def main() -> int:
             too_young += 1
         elif not payload.get("price_usd"):
             no_entry_price += 1
+        elif (payload.get("liquidity_usd") or 0.0) < args.minimum_entry_liquidity_usd:
+            # A return computed against a pool holding a dollar is arithmetic, not
+            # a trade. The first run of this study reported EV of +9,241 per
+            # dollar, driven by mints whose entry pools held $1.17 and $1.23 --
+            # the same defect STATUS.md already records at +130,273/dollar off a
+            # $0.00-liquidity token. Unknown liquidity is excluded too: this is a
+            # fail-closed floor, not a filter tuned until the number looked sane.
+            untradeable += 1
         else:
             mature[mint] = payload
 
@@ -187,8 +207,12 @@ def main() -> int:
     print(f"  mints carrying social fields      {len(observations):>8,}")
     print(f"  too young for the horizon         {too_young:>8,}")
     print(f"  no entry price                    {no_entry_price:>8,}")
+    print(
+        f"  pool below"
+        f" ${args.minimum_entry_liquidity_usd:,.0f}      {untradeable:>8,}"
+    )
     print(f"  measurable                        {len(mature):>8,}")
-    total_buckets = too_young + no_entry_price + len(mature)
+    total_buckets = too_young + no_entry_price + untradeable + len(mature)
     print(f"  buckets sum                       {total_buckets:>8,} of {len(observations):,}")
     if total_buckets != len(observations):
         print("  DENOMINATOR DOES NOT RECONCILE -- results cannot be trusted.")
@@ -207,7 +231,12 @@ def main() -> int:
     if args.limit:
         mints = mints[: args.limit]
     print(f"\npricing {len(mints):,} mints against DexScreener...")
-    prices = present_prices(mints)
+    # Floor on **exit** liquidity, which is a different question from the entry
+    # floor above. A mint whose only quoting pair holds four cents cannot be
+    # sold into, so it is absent here and scored as a total loss below.
+    prices = present_prices(
+        mints, minimum_liquidity_usd=args.minimum_exit_liquidity_usd
+    )
 
     # A vanished pair is an outcome of 0.0, not a missing measurement. Dropping
     # them would measure the survivors and call it the market.
@@ -220,7 +249,18 @@ def main() -> int:
             vanished += 1
         else:
             multiples[mint] = prices[mint] / entry
-    print(f"  vanished (scored 0.0)             {vanished:>8,}")
+    print(f"  unsellable or gone (scored 0.0)   {vanished:>8,}")
+
+    # Printed, never silently dropped. EV over a skewed distribution is
+    # decided by a handful of rows, and a reader who cannot see them cannot
+    # judge whether the number describes a market or a bad price.
+    extremes = sorted(multiples.items(), key=lambda kv: -kv[1])[:5]
+    print()
+    print("  largest multiples (entry liquidity in brackets):")
+    for mint, mult in extremes:
+        liq = mature[mint].get("liquidity_usd")
+        liq_txt = "unknown" if liq is None else f"${liq:,.0f}"
+        print(f"    {mult:>12,.1f}x  {mint[:12]:<12} ({liq_txt})")
 
     followers = {
         m: int(mature[m]["twitter_followers"])

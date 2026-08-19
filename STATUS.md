@@ -650,6 +650,80 @@ Five third-party candidates were audited the same day and recorded in
 `docs/third-party-audit.md` — one adopt (Solana Tracker, scout-only, budget
 arithmetic in the entry), four reject.
 
+## 2026-08-19: a price is not a price if nothing can be sold into it
+
+Found by running the new return study and refusing to believe its output. It
+reported **EV of +9,241 per dollar** -- the same shape as the defect already
+recorded here at +130,273/dollar off a $0.00-liquidity token, which is how it was
+recognised.
+
+**The cause, verified on one real mint rather than inferred.**
+`5GEXLtoh3Rw9...` was journalled at $8.417e-06 with a $15,176 pool. Today
+DexScreener quotes it on three pairs:
+
+| pair | price | liquidity |
+|---|---:|---:|
+| pumpswap | $0.001848 | **0** |
+| meteora | $0.2288 | **$0.04** |
+| meteoradbc | $0.0000000067 | none |
+
+`present_prices` selects the deepest pair. The deepest of those is the one
+holding **four cents**, and taking its price turns the entry into a **27,183x**
+outcome. Five such mints, all with genuine entry pools of $9k-$476k, were
+producing the entire expected value.
+
+**The floor that was missing was on the exit, not the entry.** A first attempt
+added a $5,000 floor on liquidity *at observation* and the absurd numbers
+survived it, because the entry pools were real. What is not real is the pool
+being quoted today.
+
+`present_prices` now takes `minimum_liquidity_usd`, **defaulting to 0.0 so every
+existing caller is byte-for-byte unchanged**. The return study passes $1,000.
+
+**With the floor, the numbers agree with the rest of this project for the first
+time:** largest multiples 12.4x / 6.7x / 5.6x / 3.8x / 3.4x, all on pools of
+$30k-$476k; base EV per dollar **-0.7171**; median outcome **0.004**; 75 of 165
+unsellable or gone. Nothing implausible remains.
+
+**The part that needs re-examining, and has not been.** `present_prices` is
+shared with `study_age_distribution.py` and anything else resolving outcomes
+through it, all of which still run at the 0.0 default. The bias has a direction:
+without a floor, a dust pool's quote counts as a live price, so a token that
+cannot be sold reads as *alive*. That **understates death and overstates
+return**. The recorded 84.2% vanished figure is therefore a floor on effective
+death, not a ceiling, and any outcome band derived through this helper deserves a
+re-run with an exit floor before it is quoted again. Not done here; recorded so
+it is not rediscovered.
+
+## 2026-08-19: the virality thesis has a machine, and it has not passed anything
+
+`study_virality_value.py` (death) and `study_virality_return.py` (return), each
+with its decision rule committed **before** its script -- `a859fbb` then
+`d227923`, `ec3a552` then `55ae411`. The ordering is the evidence that the rule
+preceded the numbers.
+
+Both return **UNPROVEN**, and the death study did so by catching an **overfit**
+rather than a bug: the follower threshold showed a 12-point edge on the
+development half and **inverted** on the held-out half (40.9% against 38.1%).
+Fitted and read on one half, a signal that does nothing would have shipped. That
+is the first time this project has caught an overfit rather than a defect.
+
+On return, arm A is *worse* than the base rate (EV -0.9893 against -0.7171), and
+having a twitter handle at all associates with slightly **more** death
+(38.3% against 35.3%).
+
+**Arm C -- the operator's own thesis, that a well-prompted model reads virality
+the arithmetic misses -- is not yet answered.** It needs the local model run over
+the stored narrative texts; `backfill_narrative_verdicts.py` does that offline
+for no API cost and was still running at the time of writing. Its early
+distribution shows the model discriminating rather than agreeing with everything:
+69 spreading, 29 flat, 7 declined out of 105.
+
+**What is honestly established so far**: the *free* social fields available today
+-- follower reach and the presence of an account -- do not predict survival or
+return on this population. What is not established is whether the model's reading
+of the text does, and that is the arm still being filled.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:

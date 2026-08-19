@@ -74,7 +74,25 @@ def first_observations(database_path: str) -> dict[str, dict[str, Any]]:
     return first
 
 
-def present_prices(mints: list[str], chunk: int = 30) -> dict[str, float]:
+def present_prices(
+    mints: list[str], chunk: int = 30, minimum_liquidity_usd: float = 0.0
+) -> dict[str, float]:
+    """Today's price per mint, from the deepest pair DexScreener reports.
+
+    `minimum_liquidity_usd` defaults to 0.0, which is the behaviour every caller
+    had before 2026-08-19 and is preserved so existing studies are unchanged.
+    **New callers should set it.** Verified on a real mint that day: it quoted
+    three pairs -- pumpswap at $0.001848 with liquidity 0, meteora at $0.2288
+    with liquidity **$0.04**, and meteoradbc at $0.0000000067. The deepest of
+    those is the four-cent pool, and taking its price turned an 8.4e-06 entry
+    into a 27,183x outcome.
+
+    A price quoted by a pool holding four cents is not a price anyone could sell
+    into. Market capitalisation is not exit liquidity, and neither is a quote.
+    With a floor set, a mint whose every pair is below it is simply absent from
+    the result, which a caller should read as unsellable rather than unpriced.
+    """
+
     prices: dict[str, float] = {}
     best_liquidity: dict[str, float] = {}
     for index in range(0, len(mints), chunk):
@@ -96,6 +114,8 @@ def present_prices(mints: list[str], chunk: int = 30) -> dict[str, float]:
             if not address or price is None:
                 continue
             liquidity = float((pair.get("liquidity") or {}).get("usd") or 0.0)
+            if liquidity < minimum_liquidity_usd:
+                continue
             if address not in prices or liquidity >= best_liquidity.get(address, -1.0):
                 prices[address] = float(price)
                 best_liquidity[address] = liquidity
