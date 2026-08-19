@@ -112,6 +112,22 @@ class MemeRushRow:
     sell_count: int | None
     progress_pct: float | None
     migrated: bool
+    # Social evidence the vendor already supplies free, measured 2026-08-19 over
+    # 120 rows across all three stages: narrative text on 98.3%, twitter handle
+    # and follower count on 70.0%, socials on 72.5%. All of it was parsed into
+    # `raw` and discarded, while the project's recorded plan was to *pay* X
+    # $0.005 per post read for a weaker version of the same thing.
+    #
+    # `narrative_text_en` is the vendor's one-line account of why the token
+    # exists ("Glitter TikTok Meme, Viral Fragrance") and is the only
+    # human-readable text available on a token minutes old.
+    narrative_text_en: str | None = None
+    twitter_handle: str | None = None
+    # Absent is not zero, and here it matters twice: a token with no X account
+    # and a token whose follower count the vendor did not report are different
+    # facts, and only the first is evidence about the token.
+    twitter_followers: int | None = None
+    socials: dict[str, Any] = field(default_factory=dict)
     labels: VendorClusterLabels = field(default_factory=VendorClusterLabels)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -169,6 +185,22 @@ def _timestamp(value: Any) -> datetime | None:
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
 
 
+def _narrative_text_en(value: Any) -> str | None:
+    """The English narrative line, or None.
+
+    The vendor sends a per-language mapping. A missing or non-English-bearing
+    payload returns None rather than a stringified dict, because a caller that
+    hands `"{'cn': ...}"` to a model is feeding it punctuation and calling it
+    evidence.
+    """
+    if isinstance(value, dict):
+        text = value.get("en")
+        return str(text).strip() or None if text else None
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
+
+
 def _parse_row(row: dict[str, Any]) -> MemeRushRow:
     return MemeRushRow(
         chain_id=str(row.get("chainId", "")),
@@ -186,6 +218,10 @@ def _parse_row(row: dict[str, Any]) -> MemeRushRow:
         sell_count=_as_int(row.get("countSell")),
         progress_pct=_as_float(row.get("progress")),
         migrated=_as_int(row.get("migrateStatus")) == 1,
+        narrative_text_en=_narrative_text_en(row.get("narrativeText")),
+        twitter_handle=(row.get("twitterHandle") or None),
+        twitter_followers=_as_int((row.get("twitterInfo") or {}).get("followersCnt")),
+        socials=dict(row.get("socials") or {}),
         labels=VendorClusterLabels(
             insider_pct=_as_float(row.get("holdersInsiderPercent")),
             sniper_pct=_as_float(row.get("holdersSniperPercent")),

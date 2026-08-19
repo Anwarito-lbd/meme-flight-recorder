@@ -208,6 +208,145 @@ class TopicDiscoveryTests(unittest.TestCase):
         self.assertEqual(snapshot.universe, Universe.SOLANA_EMERGING)
         self.assertEqual(snapshot.raw_evidence["topic_name"], "AI Agents Meta")
 
+    def test_narrative_text_survives_the_candidate_boundary(self):
+        """The topic's own words must reach the journal, not stop at the parser.
+
+        `TopicNarrative` parsed `topic_link`, `ai_summary_en` and `tags`, and
+        `TopicCandidate` dropped all three -- so the only human-readable account
+        of *why* a narrative was hot never reached the journal and no study of
+        narrative text could be backfilled. Numbers can be recomputed from a
+        cached feed; text that was never stored cannot.
+
+        Absence stays absent: a topic with no summary carries None, never "".
+        """
+        from meme_flight_recorder.discovery import (
+            TopicCandidateFilter,
+            select_topic_candidates,
+        )
+        from meme_flight_recorder.providers.binance_web3 import TopicNarrative, TopicToken
+
+        token = TopicToken(
+            chain_id="CT_501",
+            contract_address="TokenA1111111111111111111111111111111111111",
+            symbol="TOKA",
+            liquidity_usd=25_000.0,
+            net_inflow_1h_usd=12_000.0,
+            unique_traders_1h=45,
+            migrated=True,
+        )
+        described = TopicNarrative(
+            topic_id="top-123",
+            chain_id="CT_501",
+            name_en="AI Agents Meta",
+            topic_link="https://x.com/someone/status/123",
+            ai_summary_en="Traders are rotating into agent tokens.",
+            tags=("ai", "agents"),
+            net_inflow_1h_usd=30_000.0,
+            tokens=(token,),
+        )
+        candidates, _ = select_topic_candidates(
+            [described], TopicCandidateFilter(minimum_liquidity_usd=5_000.0)
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].topic_link, "https://x.com/someone/status/123")
+        self.assertEqual(
+            candidates[0].topic_ai_summary_en, "Traders are rotating into agent tokens."
+        )
+        self.assertEqual(candidates[0].topic_tags, ("ai", "agents"))
+
+        silent = TopicNarrative(
+            topic_id="top-456",
+            chain_id="CT_501",
+            name_en="Quiet Meta",
+            net_inflow_1h_usd=30_000.0,
+            tokens=(token,),
+        )
+        quiet, _ = select_topic_candidates(
+            [silent], TopicCandidateFilter(minimum_liquidity_usd=5_000.0)
+        )
+        self.assertIsNone(quiet[0].topic_link)
+        self.assertIsNone(quiet[0].topic_ai_summary_en)
+        self.assertEqual(quiet[0].topic_tags, ())
+
+    def test_launchpad_social_evidence_is_parsed_not_discarded(self):
+        """The free X data the vendor already sends on every row.
+
+        Measured 2026-08-19 over 120 rows across all three stages: narrative
+        text present on 98.3%, twitter handle and follower count on 70.0%,
+        socials on 72.5%. Every field was parsed into `raw` and dropped, while
+        the recorded plan was to pay X $0.005 per post read for a weaker version
+        of the same signal.
+        """
+        from meme_flight_recorder.providers.binance_web3 import _parse_row
+
+        row = _parse_row(
+            {
+                "chainId": "CT_501",
+                "contractAddress": "TokenA1111111111111111111111111111111111111",
+                "symbol": "GlamFam",
+                "name": "Mens Aftershave",
+                "narrativeText": {"en": "Glitter TikTok Meme, Viral Fragrance", "cn": "..."},
+                "twitterHandle": "Devilantesol",
+                "twitterInfo": {"followersCnt": 3855, "followingCnt": 174, "type": "X_POST"},
+                "socials": {"website": "https://www.tiktok.com/@greciator/video/123"},
+            }
+        )
+        self.assertEqual(row.narrative_text_en, "Glitter TikTok Meme, Viral Fragrance")
+        self.assertEqual(row.twitter_handle, "Devilantesol")
+        self.assertEqual(row.twitter_followers, 3855)
+        self.assertEqual(row.socials["website"], "https://www.tiktok.com/@greciator/video/123")
+
+    def test_missing_social_evidence_is_none_never_zero(self):
+        """A token with no X account and one the vendor did not report differ.
+
+        Only the first is evidence about the token. Collapsing both to 0 would
+        let a reporting gap read as a measured absence of followers -- the error
+        this project has already made three times.
+        """
+        from meme_flight_recorder.providers.binance_web3 import _parse_row
+
+        bare = _parse_row(
+            {
+                "chainId": "CT_501",
+                "contractAddress": "TokenB2222222222222222222222222222222222222",
+                "symbol": "BARE",
+                "name": "Bare",
+            }
+        )
+        self.assertIsNone(bare.narrative_text_en)
+        self.assertIsNone(bare.twitter_handle)
+        self.assertIsNone(bare.twitter_followers)
+        self.assertEqual(bare.socials, {})
+
+        # A real account with a genuine zero must survive as 0, not become None.
+        zero = _parse_row(
+            {
+                "chainId": "CT_501",
+                "contractAddress": "TokenC3333333333333333333333333333333333333",
+                "symbol": "ZERO",
+                "name": "Zero",
+                "twitterHandle": "brandnew",
+                "twitterInfo": {"followersCnt": 0},
+            }
+        )
+        self.assertEqual(zero.twitter_followers, 0)
+        self.assertIsNotNone(zero.twitter_handle)
+
+    def test_non_english_narrative_is_none_not_a_stringified_dict(self):
+        """Feeding a model `"{'cn': ...}"` is feeding it punctuation."""
+        from meme_flight_recorder.providers.binance_web3 import _parse_row
+
+        row = _parse_row(
+            {
+                "chainId": "CT_501",
+                "contractAddress": "TokenD4444444444444444444444444444444444444",
+                "symbol": "CN",
+                "name": "CN",
+                "narrativeText": {"cn": "中文"},
+            }
+        )
+        self.assertIsNone(row.narrative_text_en)
+
 
 if __name__ == "__main__":
     unittest.main()

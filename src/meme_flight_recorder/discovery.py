@@ -240,6 +240,14 @@ class TopicCandidate:
     topic_id: str
     topic_name: str
     topic_category: str | None = None
+    # The narrative's own text and its source link. Parsed by `TopicNarrative`
+    # and, until 2026-08-19, dropped here -- so the only human-readable account
+    # of *why* a topic was hot never reached the journal, and no study of
+    # narrative text could ever be backfilled. Text is the one kind of evidence
+    # that cannot be recomputed later from numbers.
+    topic_link: str | None = None
+    topic_ai_summary_en: str | None = None
+    topic_tags: tuple[str, ...] = ()
     topic_net_inflow_usd: float | None = None
     topic_net_inflow_1h_usd: float | None = None
     token_net_inflow_usd: float | None = None
@@ -382,6 +390,9 @@ def select_topic_candidates(
                 topic_id=getattr(topic, "topic_id", ""),
                 topic_name=getattr(topic, "name_en", ""),
                 topic_category=getattr(topic, "category", None),
+                topic_link=getattr(topic, "topic_link", None),
+                topic_ai_summary_en=getattr(topic, "ai_summary_en", None),
+                topic_tags=tuple(getattr(topic, "tags", ()) or ()),
                 topic_net_inflow_usd=getattr(topic, "net_inflow_usd", None),
                 topic_net_inflow_1h_usd=getattr(topic, "net_inflow_1h_usd", None),
                 token_net_inflow_usd=getattr(token, "net_inflow_usd", None),

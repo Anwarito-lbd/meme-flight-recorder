@@ -8,6 +8,8 @@ payload carries the parameters that produced the verdict.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from meme_flight_recorder.config import ScoutFilters, StrictnessLevel
 from meme_flight_recorder.confluence import ConfluenceEvidence
 from meme_flight_recorder.scout import (
@@ -206,3 +208,51 @@ class TestJournalPayload:
             "first_candle_vertical",
             "market_cap_band",
         }
+
+
+class TestTheModelCannotGate:
+    """The invariant that makes an LLM safe to have in this system at all.
+
+    `CLAUDE.md` requires gates be computed. A model asked the same question twice
+    can answer differently, so if any of its output reached a verdict there would
+    be no way to tell whether a verdict changed because the market moved or
+    because the model did. These fields are journalled so a later study can
+    measure whether the model was worth listening to -- and that study is the
+    only route by which its judgement could ever earn a place in the entry path.
+    """
+
+    MODEL_FIELDS: ClassVar[dict[str, object]] = {
+        "narrative_text": "Glitter TikTok Meme, Viral Fragrance",
+        "narrative_sentiment": "positive",
+        "narrative_backend": "ollama:qwen2.5:3b",
+        "model_says_accelerating": True,
+        "twitter_handle": "Devilantesol",
+        "twitter_followers": 92_326_827,
+    }
+
+    def test_no_model_field_changes_a_verdict(self) -> None:
+        for level, name in ((CLOSED, "level_1"), (OPEN, "level_1")):
+            plain = evaluate(candidate(), FILTERS, level, name, frozenset())
+            loud = evaluate(
+                candidate(**self.MODEL_FIELDS), FILTERS, level, name, frozenset()
+            )
+            assert loud.verdict is plain.verdict
+            assert loud.reasons == plain.reasons
+            assert loud.confluence.present_count == plain.confluence.present_count
+            assert loud.confluence.unknown_count == plain.confluence.unknown_count
+
+    def test_the_most_enthusiastic_model_cannot_rescue_a_rejection(self) -> None:
+        """A candidate the gates reject stays rejected however the model reads it."""
+        doomed = candidate(age_hours=99.0, **self.MODEL_FIELDS)
+        decision = evaluate(doomed, FILTERS, OPEN, "level_1", frozenset())
+        assert decision.verdict is ScoutVerdict.REJECT
+
+    def test_model_output_is_journalled_so_it_can_be_measured(self) -> None:
+        decision = evaluate(
+            candidate(**self.MODEL_FIELDS), FILTERS, OPEN, "level_1", frozenset()
+        )
+        payload = decision.to_payload(FILTERS, OPEN, candidate(**self.MODEL_FIELDS))
+        evidence = payload["evidence"]
+        assert evidence["model_says_accelerating"] is True
+        assert evidence["narrative_sentiment"] == "positive"
+        assert evidence["twitter_followers"] == 92_326_827

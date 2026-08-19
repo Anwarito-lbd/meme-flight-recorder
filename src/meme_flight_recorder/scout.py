@@ -83,6 +83,26 @@ class CandidateEvidence:
     # provider was not reachable. They are not the same and must not merge.
     news_article_count: int | None = None
 
+    # Social evidence, and the model's reading of it.
+    #
+    # **None of this can gate, structurally.** `evaluate` reads the four gate
+    # fields above and `evidence.confluence`; it never looks here. That is the
+    # whole point: a model's answer is not reproducible run to run, so if one of
+    # these decided a verdict there would be no way to tell whether the verdict
+    # changed because the market moved or because the model did.
+    #
+    # `model_says_accelerating` records the model's own answer to the question
+    # the *computed* signal decides. Journalling both is what makes it possible
+    # to measure later whether the model agreed with the arithmetic, and whether
+    # either predicted anything -- which is the only honest route by which a
+    # model's judgement could ever earn a place in the entry path.
+    narrative_text: str | None = None
+    narrative_sentiment: str | None = None
+    narrative_backend: str | None = None
+    model_says_accelerating: bool | None = None
+    twitter_handle: str | None = None
+    twitter_followers: int | None = None
+
 
 @dataclass(frozen=True)
 class ScoutDecision:
@@ -140,6 +160,12 @@ class ScoutDecision:
                 "lifecycle_state": evidence.lifecycle_state,
                 "wallet_coverage_pct": evidence.wallet_coverage_pct,
                 "news_article_count": evidence.news_article_count,
+                "narrative_text": evidence.narrative_text,
+                "narrative_sentiment": evidence.narrative_sentiment,
+                "narrative_backend": evidence.narrative_backend,
+                "model_says_accelerating": evidence.model_says_accelerating,
+                "twitter_handle": evidence.twitter_handle,
+                "twitter_followers": evidence.twitter_followers,
             },
             "parameters": {
                 "filters": vars(filters),

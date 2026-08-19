@@ -80,6 +80,10 @@ def _row(address: str, labels: VendorClusterLabels) -> MemeRushRow:
         sell_count=5,
         progress_pct=100.0,
         migrated=True,
+        narrative_text_en="Glitter TikTok Meme, Viral Fragrance",
+        twitter_handle="Devilantesol",
+        twitter_followers=3855,
+        socials={"website": "https://www.tiktok.com/@greciator/video/123"},
         labels=labels,
     )
 
@@ -279,6 +283,27 @@ class CollectorTests(unittest.TestCase):
 
         self.assertEqual(summary.rejected, 1)
         self.assertEqual(received, [])
+
+    def test_social_evidence_reaches_the_journal(self):
+        """Free X data must be stored, because it cannot be recovered later.
+
+        The vendor supplies narrative text on 98.3% of rows and a twitter handle
+        with follower count on 70.0% (measured over 120 rows, 2026-08-19). All of
+        it was parsed into `raw` and dropped. A study of it is impossible unless
+        it is written down at observation time -- the same reason the
+        concentration study could not be backfilled.
+        """
+        discovery = FakeDiscovery([_row("Mint1", CLEAN_LABELS)])
+        self._collector(discovery).run_once()
+
+        events = self.recorder.list_events(50, entity_id="Mint1")
+        payload = json.loads(events[0]["payload_json"])
+        self.assertEqual(payload["narrative_text_en"], "Glitter TikTok Meme, Viral Fragrance")
+        self.assertEqual(payload["twitter_handle"], "Devilantesol")
+        self.assertEqual(payload["twitter_followers"], 3855)
+        self.assertEqual(
+            payload["socials"]["website"], "https://www.tiktok.com/@greciator/video/123"
+        )
 
     def test_journal_chain_stays_valid_after_collection(self):
         discovery = FakeDiscovery(

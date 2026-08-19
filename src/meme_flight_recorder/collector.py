@@ -256,9 +256,6 @@ class Collector:
                     errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
                     continue
 
-                    errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
-                    continue
-
         opened = 0
         entry_skips: dict[str, int] = {}
         if self.monitor is not None and offered:
@@ -331,6 +328,21 @@ class Collector:
             market_cap_usd=row.market_cap_usd,
             holders=row.holders,
             chain_id=row.chain_id,
+            extra_payload={
+                # Social evidence, journalled because it is the only account of
+                # *why* a token exists that is available while it is minutes old,
+                # and because a study of it is impossible if it was never stored.
+                # Measured coverage 2026-08-19 over 120 rows: text 98.3%,
+                # handle and followers 70.0%.
+                #
+                # Recorded, never acted upon. Whether any of it predicts anything
+                # is a question for a study once outcomes exist; using it to gate
+                # or size today would be a belief rather than a measurement.
+                "narrative_text_en": row.narrative_text_en,
+                "twitter_handle": row.twitter_handle,
+                "twitter_followers": row.twitter_followers,
+                "socials": row.socials or None,
+            },
         )
 
     def _trending_pools(self) -> tuple[list[Any], dict[str, int]]:
@@ -375,9 +387,24 @@ class Collector:
             extra_payload={
                 "topic_name": candidate.topic_name,
                 "topic_id": candidate.topic_id,
+                "topic_category": candidate.topic_category,
+                # The narrative's text, journalled so a study of it is possible
+                # at all. `None` where the vendor did not supply it -- an absent
+                # summary is not an empty one, and "" would read as "the topic
+                # had nothing to say".
+                "topic_link": candidate.topic_link,
+                "topic_ai_summary_en": candidate.topic_ai_summary_en,
+                "topic_tags": list(candidate.topic_tags) or None,
                 "topic_net_inflow_1h_usd": candidate.topic_net_inflow_1h_usd,
+                # Per-token inflow, distinct from the topic-level figure above:
+                # a hot narrative with no flow into *this* mint is the copycat
+                # case the clone filter exists to catch.
+                "token_net_inflow_1h_usd": candidate.token_net_inflow_1h_usd,
                 "unique_traders_1h": candidate.unique_traders_1h,
+                "unique_traders_5m": candidate.unique_traders_5m,
                 "smart_money_holders": candidate.smart_money_holders,
+                "kol_holders": candidate.kol_holders,
+                "price_change_24h_pct": candidate.price_change_24h_pct,
             },
         )
 

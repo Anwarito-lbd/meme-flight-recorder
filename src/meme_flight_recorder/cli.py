@@ -190,6 +190,7 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     from .providers.birdeye import BirdeyeProvider
     from .providers.coingecko import CoinGeckoProvider
     from .providers.dexscreener import DexScreenerProvider
+    from .providers.news import classify, judge_acceleration
     from .scout import CandidateEvidence, ScoutVerdict, evaluate, held_mints, journal_decision
 
     if settings.scout is None:
@@ -235,6 +236,51 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     # evidence from a price source rather than to relax the gate, because
     # relaxing produces trades immediately and makes every number after it
     # worthless.
+    # Narrative evidence, fetched once per run rather than per candidate.
+    #
+    # `Signal.NARRATIVE_ACCELERATING` has been in the confluence tuple since the
+    # mandate was implemented and has resolved UNKNOWN on every candidate ever
+    # graded, because nothing populated `topic_net_inflow_1h_usd`. The signal was
+    # not missing -- its evidence was. Supplying it is what this project calls
+    # for; relaxing the threshold instead is what it forbids.
+    #
+    # A feed outage leaves the map empty, which leaves the signal UNKNOWN, which
+    # cannot help a candidate clear the bar. That is the fail-closed direction.
+    topic_inflow_by_mint: dict[str, float] = {}
+    topic_context_by_mint: dict[str, dict[str, Any]] = {}
+    try:
+        narratives = BinanceWeb3Provider().topic_narratives()
+    except Exception as error:  # noqa: BLE001 - a topic outage is not an absent narrative
+        narratives = []
+        print(f"note: topic feed unavailable ({type(error).__name__}: {error});")
+        print("      narrative acceleration stays UNKNOWN rather than absent.")
+    for narrative in narratives:
+        if getattr(narrative, "closed", False):
+            continue
+        inflow = getattr(narrative, "net_inflow_1h_usd", None)
+        for token in getattr(narrative, "tokens", ()) or ():
+            # Join on mint address, never ticker. Five CATE mints and four SAOF
+            # mints appeared in one night.
+            mint = (getattr(token, "contract_address", "") or "").strip()
+            if not mint or inflow is None:
+                continue
+            # A mint can appear under two narratives; the strongest inflow wins,
+            # and it is recorded rather than summed -- adding two topics' flows
+            # would invent a number no feed reported.
+            if mint not in topic_inflow_by_mint or inflow > topic_inflow_by_mint[mint]:
+                topic_inflow_by_mint[mint] = inflow
+                topic_context_by_mint[mint] = {
+                    "topic_id": getattr(narrative, "topic_id", None),
+                    "topic_name": getattr(narrative, "name_en", None),
+                    "topic_link": getattr(narrative, "topic_link", None),
+                    "topic_ai_summary_en": getattr(narrative, "ai_summary_en", None),
+                    "topic_tags": list(getattr(narrative, "tags", ()) or ()) or None,
+                }
+    print(
+        f"narratives: {len(narratives)} topics, "
+        f"{len(topic_inflow_by_mint)} mints carrying 1h inflow"
+    )
+
     birdeye = BirdeyeProvider()
     coingecko = CoinGeckoProvider()
     dexscreener = DexScreenerProvider()
@@ -275,6 +321,13 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
     for row in rows:
         age_hours = None if row.age_minutes is None else row.age_minutes / 60.0
         first_candle = first_candles.get(row.contract_address, (None, None, None))
+        # The narrative line is the article. `classify` already encodes the
+        # distinction this needs: an absent field is 'looked and found
+        # nothing' (count 0), an unreachable model is UNKNOWN with count
+        # None, and a tie is UNKNOWN rather than a coin flip.
+        reading = classify(
+            row.symbol, [row.narrative_text_en] if row.narrative_text_en else []
+        )
         evidence = CandidateEvidence(
             mint=row.contract_address,
             symbol=row.symbol,
@@ -292,7 +345,24 @@ def _scout(settings: Any, recorder: FlightRecorder, args: Any) -> int:
                 # hundred, and approximating unique buyers from counts would be a
                 # weak number wearing a strong name.
                 buy_transaction_share_pct=_buy_share_pct(row.buy_count, row.sell_count),
+                # Absent from the map means this mint is in no active narrative,
+                # which is not the same as a narrative with no flow. `.get`
+                # returns None and the signal resolves UNKNOWN.
+                topic_net_inflow_1h_usd=topic_inflow_by_mint.get(row.contract_address),
             ),
+            # Social evidence the vendor already supplies, and the local model's
+            # reading of it. Journalled, never gating: `evaluate` reads the four
+            # gate fields and `evidence.confluence`, and nothing here is in
+            # either. Measured coverage over 120 rows on 2026-08-19 -- narrative
+            # text 98.3%, handle and followers 70.0%.
+            narrative_text=row.narrative_text_en,
+            narrative_sentiment=reading.sentiment.value,
+            narrative_backend=reading.backend,
+            model_says_accelerating=judge_acceleration(
+                row.symbol, row.narrative_text_en
+            ),
+            twitter_handle=row.twitter_handle,
+            twitter_followers=row.twitter_followers,
         )
         decision = evaluate(evidence, filters, level, args.level, previously_held)
         verdicts[decision.verdict.value] = verdicts.get(decision.verdict.value, 0) + 1

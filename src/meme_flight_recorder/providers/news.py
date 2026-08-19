@@ -217,6 +217,63 @@ def classify(
     )
 
 
+ACCELERATION_PROMPT = (
+    "You judge whether a memecoin's story is spreading right now.\n"
+    "Answer with exactly one word: SPREADING, FLAT, or UNCLEAR.\n"
+    "SPREADING means the text describes a meme, trend or event with live "
+    "attention behind it.\n"
+    "FLAT means it describes a generic or copycat token with no live story.\n"
+    "UNCLEAR means the text does not say either way.\n"
+    "Answer with one word and nothing else.\n\n"
+    "Token: {symbol}\nText: {text}\nAnswer:"
+)
+
+
+def reads_as_accelerating(raw: str) -> bool | None:
+    """Map the model's word onto a tri-state, defaulting to unknown.
+
+    Strict like `parse_label`, and for the same reason: a model that did not
+    follow the instruction has not answered, and inferring intent from a
+    malformed reply manufactures a signal. Returns None for UNCLEAR and for
+    anything unrecognised -- never False, because "the model would not say" and
+    "the model said no" are different facts.
+    """
+    text = (raw or "").strip().upper()
+    if text.startswith("SPREADING"):
+        return True
+    if text.startswith("FLAT"):
+        return False
+    return None
+
+
+def judge_acceleration(
+    symbol: str,
+    text: str | None,
+    *,
+    backend: str | None = None,
+    model: str | None = None,
+    timeout: int = 20,
+) -> bool | None:
+    """The model's own answer to the question the computed signal decides.
+
+    **Recorded, never acted upon.** `Signal.NARRATIVE_ACCELERATING` is resolved
+    from measured inflow against a fixed threshold, and that is what may gate.
+    This answer is journalled beside it so a later study can ask whether the
+    model agreed with the arithmetic, and whether either predicted return. Until
+    that study exists, using this to decide anything would be a belief wearing
+    the clothes of a measurement.
+
+    Returns None whenever there is no answer -- no text, no backend, the model
+    unreachable, or a reply that did not follow the instruction.
+    """
+    chosen = (backend or os.getenv("SCOUT_SENTIMENT_BACKEND") or "none").strip().lower()
+    if chosen != "ollama" or not text:
+        return None
+    name = model or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+    raw = _ollama(ACCELERATION_PROMPT.format(symbol=symbol, text=text[:2000]), name, timeout)
+    return None if raw is None else reads_as_accelerating(raw)
+
+
 def available_backends() -> dict[str, bool]:
     """Which backends could actually answer right now.
 

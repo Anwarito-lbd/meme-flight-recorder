@@ -435,6 +435,85 @@ real ceiling is **2 concurrent $10 positions, $20 of $50 at risk**. That makes
 the shot-count problem worse, not better — capturing a p≈5.8% tail wants ~50
 attempts — and that is a known, chosen cost, not an oversight.
 
+## 2026-08-19: the X data was already arriving free, and was being thrown away
+
+The recorded plan was to pay X $0.005 per post read for social signal. Before
+building that, the free surfaces were measured — and the launchpad feed this
+project has polled for weeks already carries the same class of evidence on every
+row. **Measured over 120 rows across all three stages, denominator reconciling:**
+
+| vendor field | coverage | what it is |
+|---|---:|---|
+| `narrativeText.en` | **118/120 (98.3%)** | one-line account of why the token exists |
+| `twitterHandle` | 84/120 (70.0%) | the X account behind the launch post |
+| `twitterInfo.followersCnt` | 84/120 (70.0%) | that account's reach |
+| `socials` | 87/120 (72.5%) | source links (TikTok, X, site) |
+| `description` | **0/120** | dead field; never populated |
+
+Every one of them was parsed into `MemeRushRow.raw` and discarded. Nothing
+journalled them, so no study of narrative text could ever have been run. They are
+now parsed onto typed fields and journalled on every launchpad candidate.
+
+**Name that field carefully.** `twitter_followers` is the **reach of the source
+post's account, not the token's own community**. A token called NASA carries
+92,326,827 followers because it references the real NASA account. Read as
+"traction" it is nonsense; read as "how far this post could travel" it may be
+exactly the right quantity — but it has not been measured, and it gates nothing.
+
+**Follower distribution**, n=84: min 0, p25 191, median 3,353, p75 113,800.
+
+## 2026-08-19: narrative detection is a lagging indicator, measured
+
+`Signal.NARRATIVE_ACCELERATING` has been in the confluence tuple since the
+mandate was implemented and has resolved UNKNOWN on every candidate ever graded,
+because `topic_net_inflow_1h_usd` was never populated. The scout now fetches the
+topic feed once per run and joins on mint address.
+
+**And the join is empty.** Over 40 launchpad mints against 151 mints across 30
+open narratives: **overlap 0 (0.0%)**. Topic tokens carry a median market cap of
+$2,103 against $8 for launchpad rows — **271x larger**.
+
+So the AI narrative feed does not describe tokens before they move; it describes
+tokens that already have flow. **For the question "find it before it goes viral",
+the topic feed is structurally too late.** The join is kept because it is correct
+and fail-closed — absent from the map leaves the signal UNKNOWN, which cannot
+help a candidate clear the bar — and because it resolves the moment a launchpad
+mint does enter a narrative. But it should not be expected to fire on newborns,
+and a run showing 11 of 14 signals UNKNOWN is that fact, not a defect.
+
+The 152 topic-stage candidates already journalled with inflow are the right
+population for the study of whether inflow predicts anything. That study is not
+yet written.
+
+## 2026-08-19: the local model is wired, and it cannot gate
+
+`qwen2.5:3b` was pulled on 2026-08-18 and sat unused because
+`SCOUT_SENTIMENT_BACKEND` defaults to `none`. The scout now classifies the
+vendor's narrative line through `providers/news.py` and journals the result.
+Measured on live rows: **$0, ~3.2s per call, answers on real text.**
+
+`judge_acceleration` asks the model the *same question the computed signal
+decides* and records its answer as `model_says_accelerating`. Both are
+journalled, so a later study can ask whether the model agreed with the
+arithmetic and whether either predicted return. **That study is the only route by
+which a model's judgement could ever earn a place in the entry path** — the
+operator asked for the model to decide directly, and this is that request
+answered through the front door rather than by assumption.
+
+**Three tests pin the invariant**: no model field changes a verdict at either
+strictness level, the most enthusiastic reading cannot rescue a gate rejection,
+and the output is journalled so it can be measured. `evaluate()` reads the four
+gate fields and `evidence.confluence`; none of the model fields is in either.
+Verdicts were identical with the model on and off across live runs.
+
+**X's pricing, verified 2026-08-19 rather than recalled.** The standalone free
+tier ended 2026-02-06; reads cost $0.005 and `xurl` bills at the same rate — the
+operator's belief in a free tier is wrong on the tier, right that an app-only
+bearer token reads public posts. **But apps migrated from the old free tier
+received a one-time $10 credit voucher — roughly 2,000 free reads** — and this
+account's token came from an existing app. Only the operator can check that
+balance at developer.x.com. Nothing has been built against X.
+
 ## Recall is zero. This is the most important finding in the project.
 
 `scripts/study_winner_recall.py` asks the question every other study inverts:
