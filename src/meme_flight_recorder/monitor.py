@@ -1,0 +1,473 @@
+"""Opening and managing paper positions, forward, on live data.
+
+This is the piece that has never existed. The journal holds thousands of
+observations and zero positions, so every expectancy figure in this project is
+backward-looking, drawn from tokens sampled after their outcomes were known. No
+filter can be trusted on that basis, which is why the deep-pool result -- the
+first to survive removal of its own best trades -- is still not wired into
+anything. Forward paper trades are the only way to change that.
+
+**The entry rule here is structural, not chart-based, and that is deliberate.**
+Measured over 1,694 outcomes, filtering on pool depth beat the tradeable
+baseline both before and after deleting its three largest winners, at 3.6x on
+the tail-adjusted number. The breakout entry it replaces lost money under every
+exit policy tested. So the rule is: pool deep enough, gates passed, enter, hold.
+
+**Holding is the policy, not an omission.** Positions open with no stop and no
+breakout level, which disables the stop and thesis exits in `evaluate_exit` --
+both are guarded on `> 0`. What remains active is what the measurement assumed:
+security exits, liquidity exits, the stale-position exit, and a time limit. A
+stop would contradict the thesis being tested. It would also be theatre: a
+replayed collapse fell 1,700x below its stop inside one candle, so only position
+size protects the account, and it already does.
+
+**It cannot trade.** No key, no signing, no broadcast. It writes journal rows.
+`tests/test_no_live_execution.py` stays green and unmodified.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from .config import ExitLimits, MicroCapitalLimits, Settings
+from .costs import round_trip_cost
+from .exits import (
+    PositionObservation,
+    PositionView,
+    evaluate_exit,
+    realistic_fill_price,
+)
+from .journal import FlightRecorder
+from .models import CandidateStatus, Universe
+from .notify import format_position_event
+from .position_store import open_positions, save_closed, save_opened
+from .positions import apply_exit, mark, open_position
+from .readiness import (
+    ReadinessPolicy,
+    StrategyReadiness,
+    assess_candidate,
+)
+from .risk import PortfolioState, RiskEngine
+
+
+@dataclass(frozen=True)
+class MonitorConfig:
+    """Rules for the forward paper book."""
+
+    # The filter that survived its own tail test. Deliberately higher than the
+    # risk engine's $5,000 floor: at $5,000 the same study showed +0.072 per
+    # dollar after removing the top three winners, against +0.264 here.
+    minimum_pool_liquidity_usd: float = 50_000.0
+
+    # One position per mint, and a ceiling on how many run at once. Ten $4
+    # positions is $40, the whole account, so this is also the aggregate
+    # exposure limit expressed in the only unit that matters at this size.
+    maximum_open_positions: int = 10
+
+    # Far longer than the exit engine's 1,440-minute default. The thesis under
+    # test is tail capture, and a one-day limit would close positions before the
+    # tail it is trying to measure had a chance to arrive.
+    maximum_hold_minutes: int = 10_080  # seven days
+
+    # A position whose price cannot be read for this many consecutive cycles is
+    # closed rather than held. Everywhere else missing evidence blocks a new
+    # position; for money already at risk the rule inverts, because an asset
+    # that cannot be observed is a hope rather than a position.
+    stale_after_failed_checks: int = 3
+
+    # Which safety statuses may open a position.
+    #
+    # This previously accepted only ELIGIBLE, and that was a bug rather than a
+    # policy. `SafetyEngine.evaluate` assigns MONITOR *only* when there are no
+    # failures at all:
+    #
+    #     status = REJECT if failures else ELIGIBLE
+    #     if not failures and (universe == SOLANA_LAUNCH or too_young):
+    #         status = MONITOR
+    #
+    # So MONITOR means every hard gate passed and the token is merely young or
+    # from the launchpad universe -- a maturity label, not a safety verdict.
+    # Requiring ELIGIBLE therefore silently discarded candidates that had passed
+    # everything: measured over 18,846 journalled mints, 52 cleared every gate
+    # and 49 of them landed on MONITOR, which is the entire reason the paper
+    # book stayed empty.
+    #
+    # Accepting MONITOR is not a relaxation: no gate changed, and population
+    # control still comes from `minimum_pool_liquidity_usd` below, which is the
+    # right lever for it. Listing the statuses explicitly also makes the choice
+    # visible instead of leaving it implied by one comparison.
+    accepted_statuses: tuple[str, ...] = (
+        CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,
+        CandidateStatus.MONITOR.value,
+    )
+
+    # Safety is now separate from maturity, and both are separate from the
+    # decision to trade. `readiness_policy` answers only the last one, and its
+    # default admits no lifecycle state at all, so a safety-clean candidate is
+    # WATCH until a measured band says otherwise. Widening it is the single
+    # visible act that turns research into trading.
+    #
+    # This does not replace the status check above, it sits on top of it. A
+    # readiness policy can only ever *narrow* what opens: FAIL and UNKNOWN
+    # verdicts are blocked structurally in `readiness.assess` and no
+    # configuration here can admit them.
+    readiness_policy: ReadinessPolicy = field(default_factory=ReadinessPolicy)
+
+    # Fixed position size in dollars, overriding percent-of-equity sizing.
+    # None keeps the measured 2% rule, which is what production runs. This
+    # exists so position size can be *studied* -- the round-trip cost is
+    # 5.44% at $0.80 and falls sharply as the fixed network fee amortises,
+    # so size and cost cannot be reasoned about separately.
+    position_usd_override: float | None = None
+
+    # Exit levels, both disabled by default because `evaluate_exit` guards them
+    # on `> 0` and the deep-pool result was measured under a pure hold.
+    # take_profit_multiple of 2.0 sells at 2x; stop_loss_pct of 50 sells at -50%.
+    # Measured caveat that must not be forgotten when enabling these: capping
+    # the upside removes the tail that was paying for the losses, and a replayed
+    # collapse fell 1,700x below its stop inside one candle.
+    take_profit_multiple: float = 0.0
+    stop_loss_pct: float = 0.0
+
+
+@dataclass(frozen=True)
+class MonitorSummary:
+    considered: int = 0
+    opened: int = 0
+    closed: int = 0
+    still_open: int = 0
+    skipped: dict[str, int] = field(default_factory=dict)
+    errors: tuple[str, ...] = ()
+
+
+class PositionMonitor:
+    """Marks open paper positions, exits them, and opens new ones."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        recorder: FlightRecorder,
+        pair_provider: Any,
+        config: MonitorConfig | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        alerts_enabled: bool = False,
+    ) -> None:
+        self.settings = settings
+        self.recorder = recorder
+        self.pair_provider = pair_provider
+        self.config = config or MonitorConfig()
+        self.clock = clock
+        self.alerts_enabled = alerts_enabled
+        self.risk = RiskEngine(settings.risk, settings.micro)
+        # Consecutive failed observations per mint. Held in memory rather than
+        # journalled: after a restart a position starts with a clean slate,
+        # which errs toward keeping a position rather than closing one on a
+        # count that predates the process.
+        self._failed_checks: dict[str, int] = {}
+
+    def _alert(self, message: str, errors: list[str]) -> None:
+        """Send one Telegram alert, reporting failure instead of swallowing it.
+
+        Off unless the caller enabled alerts, matching the notify module's own
+        rule that importing this code cannot message anyone. A dropped alert is
+        appended to the cycle's error list: silence about a failed send is how
+        an operator concludes the market was quiet when the network was.
+        """
+        if not self.alerts_enabled:
+            return
+        from .notify import send
+
+        delivery = send(message, enabled=True)
+        if not delivery.delivered and delivery.state.value != "disabled":
+            errors.append(f"alert {delivery.state.value}: {delivery.detail}")
+
+    # ------------------------------------------------------------------ exits
+
+    def _exit_limits(self) -> ExitLimits:
+        return ExitLimits(
+            maximum_hold_minutes=self.config.maximum_hold_minutes,
+            stale_after_failed_checks=self.config.stale_after_failed_checks,
+            # No-progress closure is disabled: "it has not moved yet" is the
+            # normal state of a position waiting for a tail event, and closing
+            # on it would systematically remove the outcomes being measured.
+            no_progress_minutes=self.config.maximum_hold_minutes,
+        )
+
+    def _observe(self, mint: str) -> tuple[float | None, float | None]:
+        try:
+            pair = self.pair_provider.deepest_pair(mint)
+        except Exception:  # noqa: BLE001 - a dead provider must not end the cycle
+            return None, None
+        if pair is None:
+            return None, None
+        return pair.price_usd, pair.liquidity_usd
+
+    def manage_open(self) -> tuple[int, int, list[str]]:
+        """Mark every open position and exit the ones that must be exited."""
+        closed = 0
+        errors: list[str] = []
+        limits = self._exit_limits()
+        live = open_positions(self.recorder)
+
+        for mint, position in live.items():
+            price, liquidity = self._observe(mint)
+            if price is None:
+                self._failed_checks[mint] = self._failed_checks.get(mint, 0) + 1
+            else:
+                self._failed_checks[mint] = 0
+
+            moment = self.clock()
+            marked = mark(position, price=price or position.high_water_price, liquidity_usd=liquidity)
+            view = PositionView(
+                mint=mint,
+                opened_at=marked.opened_at,
+                entry_price=marked.entry_price,
+                stop_price=marked.stop_price,
+                breakout_level=marked.breakout_level,
+                entry_liquidity_usd=marked.entry_liquidity_usd,
+                atr=marked.atr,
+                high_water_price=marked.high_water_price,
+                scaled_out_fraction=marked.scaled_out_fraction,
+                peak_liquidity_usd=marked.peak_liquidity_usd,
+            )
+            decision = evaluate_exit(
+                view,
+                PositionObservation(
+                    observed_at=moment,
+                    price_usd=price,
+                    liquidity_usd=liquidity,
+                    consecutive_failed_checks=self._failed_checks.get(mint, 0),
+                ),
+                limits,
+            )
+            if not decision.should_exit:
+                continue
+
+            # An unobservable position has no price to sell at. Recording the
+            # last seen price would invent a fill; the honest floor is zero,
+            # matching how sizing already assumes total loss.
+            fill_reference = price if price is not None else 0.0
+            fill = realistic_fill_price(
+                fill_reference,
+                self.settings.costs.assumed_impact_pct,
+                urgent=decision.urgent,
+            )
+            leg_cost_pct = (
+                round_trip_cost(
+                    max(marked.entry_price * marked.quantity, 1e-9), self.settings.costs
+                ).pct_of_position
+                / 2.0
+            )
+            try:
+                exited = apply_exit(
+                    marked,
+                    at=moment,
+                    price=fill,
+                    fraction=decision.fraction,
+                    reason=decision.reason,
+                    cost_pct=leg_cost_pct,
+                )
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"{mint}: {type(error).__name__}: {error}")
+                continue
+
+            if not exited.is_open:
+                save_closed(self.recorder, exited)
+                self._failed_checks.pop(mint, None)
+                closed += 1
+                self._alert(
+                    format_position_event(
+                        "closed",
+                        exited.mint,
+                        exited.symbol,
+                        realised_usd=exited.realised_usd,
+                        reason=(
+                            exited.close_reason.value
+                            if exited.close_reason is not None
+                            else None
+                        ),
+                    ),
+                    errors,
+                )
+
+        return len(live), closed, errors
+
+    # ----------------------------------------------------------------- entries
+
+    def consider(self, candidates: list[dict[str, Any]]) -> tuple[int, dict[str, int], list[str]]:
+        """Open positions on candidates that pass the structural filter."""
+        opened = 0
+        skipped: dict[str, int] = {}
+        errors: list[str] = []
+        live = open_positions(self.recorder)
+        micro: MicroCapitalLimits = self.settings.micro
+
+        def skip(reason: str) -> None:
+            skipped[reason] = skipped.get(reason, 0) + 1
+
+        for candidate in candidates:
+            mint = str(candidate.get("mint") or "")
+            if not mint:
+                skip("no_mint")
+                continue
+            if mint in live:
+                skip("already_open")
+                continue
+            # `live` already grows as positions open below, so counting
+            # `opened` again here would halve the effective cap.
+            if len(live) >= self.config.maximum_open_positions:
+                skip("book_full")
+                continue
+            if candidate.get("status") not in self.config.accepted_statuses:
+                skip("gates_not_passed")
+                continue
+
+            # Defence in depth. Status and failures should never disagree --
+            # SafetyEngine assigns MONITOR only when `not failures` -- but if
+            # they ever do, the recorded failure wins. Trusting the friendlier
+            # of two contradictory fields is how a fail-closed gate quietly
+            # stops being one, and this costs one list check per candidate.
+            if candidate.get("failures"):
+                skip("hard_failure_recorded")
+                continue
+
+            # The maturity gate. Kept after the safety checks so that a blocked
+            # candidate is still reported as blocked for safety rather than for
+            # being young, which is the distinction that was lost when one field
+            # answered both questions.
+            verdict = assess_candidate(candidate, self.config.readiness_policy)
+            if verdict.readiness is not StrategyReadiness.ENTRY:
+                skip(f"{verdict.readiness.value}:{verdict.reason}")
+                continue
+
+            liquidity = float(candidate.get("liquidity_usd") or 0.0)
+            if liquidity < self.config.minimum_pool_liquidity_usd:
+                skip("pool_too_shallow")
+                continue
+
+            price = float(candidate.get("price_usd") or 0.0)
+            if price <= 0:
+                skip("no_price")
+                continue
+
+            sized_usd = (
+                self.config.position_usd_override
+                if self.config.position_usd_override is not None
+                else self.settings.starting_equity_usd * micro.position_pct_of_equity / 100.0
+            )
+            # Built from the live book on every candidate, not once per cycle.
+            # `live` grows as positions open below, so a state computed before
+            # the loop would let a single pass open the entire book against a
+            # cap that still read zero -- the same shape as the `opened` bug
+            # noted above. Passing only equity, which is what this did, left
+            # `open_positions` and `aggregate_open_risk_usd` at their defaults
+            # and made both exposure checks in the risk engine unreachable.
+            #
+            # Notional, not risk-at-stop: at micro size the engine compares this
+            # against a cap on open *position value*, and the position is the
+            # risk because a stop cannot be relied on to bound it here.
+            exposure_usd = sum(
+                held.entry_price * held.quantity for held in live.values()
+            )
+            approval = self.risk.approve(
+                Universe.SOLANA_EMERGING,
+                PortfolioState(
+                    equity_usd=self.settings.starting_equity_usd,
+                    open_positions=len(live),
+                    aggregate_open_risk_usd=exposure_usd,
+                ),
+                entry_price=price,
+                pool_liquidity_usd=liquidity,
+                estimated_round_trip_cost_pct=round_trip_cost(
+                    sized_usd, self.settings.costs
+                ).pct_of_position,
+                proposed_position_usd=sized_usd,
+            )
+            if not approval.approved:
+                skip(f"risk:{approval.reason}")
+                continue
+
+            # An override replaces the risk engine's *sizing*, never its
+            # *approval*. The engine still vetoes on pool share, cost ceiling
+            # and liquidity, so a larger position can still be refused for
+            # taking too much of the pool -- which is the check that matters
+            # most as size grows.
+            position_usd = (
+                self.config.position_usd_override
+                if self.config.position_usd_override is not None
+                else approval.position_value_usd
+            )
+            leg_cost_pct = (
+                round_trip_cost(position_usd, self.settings.costs).pct_of_position / 2.0
+            )
+            try:
+                # stop_price and breakout_level are zero on purpose: both exits
+                # are guarded on `> 0`, so this is a hold, which is the policy
+                # the deep-pool result was measured under.
+                position = open_position(
+                    mint=mint,
+                    symbol=str(candidate.get("symbol") or ""),
+                    at=self.clock(),
+                    price=price,
+                    position_usd=position_usd,
+                    stop_price=(
+                        price * (1.0 - self.config.stop_loss_pct / 100.0)
+                        if self.config.stop_loss_pct > 0
+                        else 0.0
+                    ),
+                    target_price=(
+                        price * self.config.take_profit_multiple
+                        if self.config.take_profit_multiple > 0
+                        else 0.0
+                    ),
+                    breakout_level=0.0,
+                    liquidity_usd=liquidity,
+                    cost_pct=leg_cost_pct,
+                    metadata={
+                        "entry_rule": "structural_deep_pool",
+                        "minimum_pool_liquidity_usd": self.config.minimum_pool_liquidity_usd,
+                        "observed_liquidity_usd": liquidity,
+                    },
+                )
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"{mint}: {type(error).__name__}: {error}")
+                continue
+
+            save_opened(self.recorder, position)
+            live[mint] = position
+            opened += 1
+            self._alert(
+                format_position_event(
+                    "opened",
+                    mint,
+                    position.symbol,
+                    price_usd=price,
+                    position_usd=sized_usd,
+                ),
+                errors,
+            )
+
+        return opened, skipped, errors
+
+    # ------------------------------------------------------------------ cycle
+
+    def run_cycle(self, candidates: list[dict[str, Any]] | None = None) -> MonitorSummary:
+        """Manage the book, then consider new entries.
+
+        Exits are evaluated before entries so that a failing discovery feed can
+        never prevent a held position from being closed. That ordering is the
+        whole reason the monitor runs at the top of the collector cycle.
+        """
+        _live, closed, exit_errors = self.manage_open()
+        opened, skipped, entry_errors = self.consider(candidates or [])
+        return MonitorSummary(
+            considered=len(candidates or []),
+            opened=opened,
+            closed=closed,
+            still_open=len(open_positions(self.recorder)),
+            skipped=skipped,
+            errors=tuple(exit_errors + entry_errors),
+        )

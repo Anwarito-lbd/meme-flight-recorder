@@ -20,6 +20,36 @@ class MintEvidence:
     largest_accounts_observed: int
     largest_accounts_error: str | None
     raw: dict[str, Any]
+    # The program that owns the mint decides whether transfers can carry custom
+    # logic at all. Classic SPL Token has no such capability; Token-2022 does,
+    # through extensions, so both facts are required to reason about whether a
+    # sell can be blocked by the contract.
+    program_id: str = ""
+    extensions: tuple[str, ...] = ()
+
+
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
+
+
+@dataclass(frozen=True)
+class HolderStake:
+    """One owner's balance, and what program controls that owner account."""
+
+    owner: str
+    amount: float
+    owner_program: str = ""
+
+    @property
+    def is_wallet(self) -> bool:
+        """True when a person could plausibly control this balance.
+
+        A System Program account is a keypair wallet. Anything else is
+        protocol-controlled: an AMM vault, a bonding curve, a staking program.
+        Unknown (empty) is treated as a wallet, so an RPC gap counts the balance
+        as private and *overstates* concentration -- the direction that rejects
+        a candidate rather than admitting one nobody can measure.
+        """
+        return self.owner_program in ("", SYSTEM_PROGRAM)
 
 
 @dataclass(frozen=True)
@@ -153,7 +183,77 @@ class HeliusProvider:
             largest_accounts_observed=len(accounts),
             largest_accounts_error=largest_error,
             raw={"account": account, "supply": supply, "largest_accounts": largest},
+            program_id=str(value.get("owner", "")),
+            extensions=tuple(
+                str(extension.get("extension", ""))
+                for extension in (info.get("extensions") or [])
+                if extension.get("extension")
+            ),
         )
+
+    def largest_holder_owners(self, mint: str) -> list[HolderStake]:
+        """Return ``(owner, raw_amount)`` for the largest holders of a mint.
+
+        ``getTokenLargestAccounts`` returns token *accounts*, not owners, and the
+        distinction matters twice over: one owner can hold several accounts, and
+        an AMM pool's vault is an account whose owner identifies it as
+        infrastructure. Resolving owners is what makes the pool subtractable, so
+        a genuine private-holder concentration can be computed.
+
+        **Three** RPC calls regardless of holder count: the largest-accounts
+        query, then one batched fetch to resolve token accounts to owners, then a
+        second batched fetch to read each owner's program so a keypair wallet can
+        be told from a protocol-controlled PDA. This said "two" until 2026-08-19,
+        having been written before the third call was added -- a caller pacing
+        itself on that number would have been under-delaying by a third.
+
+        Batched deliberately: a per-account loop would be twenty calls per
+        candidate and would exhaust the free tier within a cycle.
+        """
+        largest = self.rpc("getTokenLargestAccounts", [mint])
+        accounts = (largest or {}).get("value") or []
+        if not accounts:
+            return []
+
+        addresses = [str(item["address"]) for item in accounts if item.get("address")]
+        amounts = {
+            str(item["address"]): float(item.get("amount") or 0)
+            for item in accounts
+            if item.get("address")
+        }
+
+        fetched = self.rpc("getMultipleAccounts", [addresses, {"encoding": "jsonParsed"}])
+        owners: list[tuple[str, float]] = []
+        for address, account in zip(addresses, (fetched or {}).get("value") or [], strict=False):
+            if not account:
+                continue
+            owner = (account.get("data") or {}).get("parsed", {}).get("info", {}).get("owner")
+            if owner:
+                owners.append((str(owner), amounts.get(address, 0.0)))
+        if not owners:
+            return []
+
+        # Third call: what program controls each owner? A human's wallet is a
+        # System Program account. A liquidity pool vault, a bonding curve or any
+        # other protocol-controlled balance is a PDA owned by its own program.
+        #
+        # This distinction is what a hand-maintained address list cannot keep up
+        # with. Measured on live launchpad candidates, an address-list approach
+        # left bonding curves counted as holders and reported concentrations of
+        # 97-99% for perfectly ordinary tokens -- the same defect as the gross
+        # figure it replaced, one step further along.
+        owner_accounts = self.rpc(
+            "getMultipleAccounts",
+            [[owner for owner, _amount in owners], {"encoding": "jsonParsed"}],
+        )
+        programs = [
+            str((account or {}).get("owner") or "")
+            for account in (owner_accounts or {}).get("value") or []
+        ]
+        return [
+            HolderStake(owner=owner, amount=amount, owner_program=program)
+            for (owner, amount), program in zip(owners, programs, strict=False)
+        ]
 
     def simulate_unsigned_transaction(
         self, transaction_base64: str, replace_recent_blockhash: bool = True

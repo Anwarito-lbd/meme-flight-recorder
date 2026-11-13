@@ -9,3 +9,7 @@ data/
 integrations/freqtrade/data/
 integrations/freqtrade/*.sqlite*
 artifacts/
+
+# collector logs
+logs/
+data/paper_smoke.db

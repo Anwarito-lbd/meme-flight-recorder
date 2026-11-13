@@ -1,0 +1,567 @@
+"""Continuous capture of candidates and their gate decisions.
+
+This is the piece that makes source scoring possible at all. Expectancy after
+costs can only be computed by comparing what a token looked like at the moment
+it was observed against what it did afterwards, and the "before" half of that
+comparison cannot be reconstructed later. Pool depth, holder distribution and
+quoted price impact at 04:12 are simply gone by 04:13. Every hour without a
+collector running is an hour of that record permanently lost.
+
+So the collector journals **every** candidate, including rejected ones.
+Rejections are not waste: they are the control group. A source whose calls are
+consistently rejected for developer distribution is telling you something
+precise about that source, and that finding is only available if the rejections
+were written down.
+
+The collector can now open a *paper* position, when a ``monitor`` is supplied.
+Without one it observes, grades and records exactly as before.
+
+That is a change of behaviour and worth being precise about. It still cannot
+sign or broadcast anything: the monitor writes journal rows and nothing else,
+and ``tests/test_no_live_execution.py`` stays green and unmodified. What it adds
+is a forward track record, which the journal has never held -- thousands of
+observations and, until now, zero positions. Every expectancy figure in this
+project is backward-looking because of that gap.
+
+The monitor's exits run *before* discovery, so a failing feed can never prevent
+a held position from being closed.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from typing import Any
+
+from .clusters import assess_onchain_cluster, assess_vendor_labels
+from .confidence import score_confidence
+from .config import Settings
+from .discovery import TopicCandidate, select_topic_candidates
+from .enrichment import apply_pair_evidence, enrich_snapshot
+from .journal import FlightRecorder
+from .models import CandidateStatus, TokenSnapshot
+from .providers.binance_web3 import (
+    CHAIN_SOLANA,
+    RANK_FINALIZING,
+    RANK_MIGRATED,
+    RANK_NEW,
+    BinanceWeb3Provider,
+    MemeRushRow,
+)
+from .safety import SafetyEngine
+
+STAGES: dict[str, int] = {
+    "new": RANK_NEW,
+    "finalizing": RANK_FINALIZING,
+    "migrated": RANK_MIGRATED,
+}
+
+EVENT_CANDIDATE_OBSERVED = "candidate_observed"
+EVENT_CYCLE_COMPLETED = "collector_cycle_completed"
+
+
+@dataclass(frozen=True)
+class CollectorConfig:
+    stages: tuple[str, ...] = ("new", "finalizing", "migrated")
+    chain_id: str = CHAIN_SOLANA
+    limit_per_stage: int = 50
+    interval_seconds: int = 300
+    enrich: bool = True
+    intended_order_sol: float = 0.05
+    include_topics: bool = False
+    filter_rush_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    # Pacing, derived rather than guessed.
+    quote_calls_per_candidate: int = 2
+    target_requests_per_minute: float = 60.0
+    per_candidate_delay_seconds: float | None = None
+
+    @property
+    def pacing_delay_seconds(self) -> float:
+        """Seconds to wait per candidate to stay inside the target rate."""
+        if self.per_candidate_delay_seconds is not None:
+            return max(self.per_candidate_delay_seconds, 0.0)
+        if self.target_requests_per_minute <= 0:
+            return 0.0
+        per_second = self.target_requests_per_minute / 60.0
+        return max(self.quote_calls_per_candidate / per_second, 0.0)
+
+
+@dataclass(frozen=True)
+class CycleSummary:
+    started_at: datetime
+    observed: int = 0
+    recorded: int = 0
+    eligible: int = 0
+    monitor: int = 0
+    rejected: int = 0
+    errors: tuple[str, ...] = ()
+    status_counts: dict[str, int] = field(default_factory=dict)
+    failure_counts: dict[str, int] = field(default_factory=dict)
+    # What the paper book did with the candidates that cleared every gate.
+    # `consider()` returned these and the result was discarded, so the last
+    # decision in the pipeline -- why a fully-cleared candidate did not become a
+    # position -- was the one step this project did not journal. Zero opens then
+    # reads as "nothing qualified" when it may mean "the exposure cap held",
+    # which is the same absent-is-not-zero error the studies keep finding.
+    opened: int = 0
+    entry_skips: dict[str, int] = field(default_factory=dict)
+
+
+class Collector:
+    """Poll the discovery feed, grade each candidate, and journal the result."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        recorder: FlightRecorder,
+        discovery: BinanceWeb3Provider | None = None,
+        mint_provider: Any | None = None,
+        quote_provider: Any | None = None,
+        pair_provider: Any | None = None,
+        config: CollectorConfig | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monitor: Any | None = None,
+        movers_provider: Any | None = None,
+        topics_provider: Any | None = None,
+        security_provider: Any | None = None,
+    ) -> None:
+        self.settings = settings
+        self.recorder = recorder
+        # Established movers, when supplied. Both feeds run through the same
+        # grading path; only the population differs.
+        self.movers_provider = movers_provider
+        self.topics_provider = topics_provider
+        self.security_provider = security_provider
+        # Optional so every existing caller and test keeps working unchanged.
+        # Absent, the collector observes and records exactly as before.
+        self.monitor = monitor
+        self.discovery = discovery or BinanceWeb3Provider()
+        self.mint_provider = mint_provider
+        self.quote_provider = quote_provider
+        self.pair_provider = pair_provider
+        self.config = config or CollectorConfig()
+        self.clock = clock
+        self.safety = SafetyEngine(
+            settings.cex_safety,
+            settings.solana_safety,
+            settings.stale_after_seconds,
+            settings.clusters,
+        )
+
+    def run_once(self, sleep: Callable[[float], None] = time.sleep) -> CycleSummary:
+        """Run one full poll across configured stages."""
+        started = self.clock()
+        observed = recorded = 0
+        errors: list[str] = []
+        status_counts: dict[str, int] = {}
+        failure_counts: dict[str, int] = {}
+        # Candidates handed to the paper book. Named for what it holds rather
+        # than for one of the statuses in it: `MonitorConfig.accepted_statuses`
+        # is the single place that decides which of them may open, and filtering
+        # here first silently overrode it. That is what happened -- this list
+        # took ELIGIBLE only, so the documented fix admitting MONITOR (52 mints
+        # cleared every gate across 18,846 journalled; 49 were MONITOR) never
+        # reached the live path and sat inert one layer down. It also meant the
+        # launchpad feed could never reach the book at all: `SafetyEngine`
+        # assigns MONITOR, never ELIGIBLE, to a clean SOLANA_LAUNCH token.
+        offered: list[dict[str, Any]] = []
+
+        # Held positions are managed *before* discovery, so a failing feed can
+        # never stop a position being exited. A monitor that only ran after a
+        # successful poll would hold through exactly the outages that matter.
+        if self.monitor is not None:
+            try:
+                self.monitor.manage_open()
+            except Exception as error:  # noqa: BLE001 - the book must not end the cycle
+                errors.append(f"monitor: {type(error).__name__}: {error}")
+
+        def absorb(status: str, failures: tuple[str, ...], candidate: dict[str, Any]) -> None:
+            nonlocal recorded
+            recorded += 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            for failure in failures:
+                failure_counts[failure] = failure_counts.get(failure, 0) + 1
+            if status in (
+                CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value,
+                CandidateStatus.MONITOR.value,
+            ):
+                offered.append(candidate)
+
+        if self.movers_provider is not None:
+            # Established movers. This is the population the deep-pool filter was
+            # measured on: launchpad newborns had a median pool of $26, so a
+            # >=$50k rule almost never fires there and the paper book would sit
+            # empty regardless of how well the filter works.
+            try:
+                pools, skipped = self._trending_pools()
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"trending: {type(error).__name__}: {error}")
+                pools, skipped = [], {}
+            if skipped:
+                failure_counts.update({f"mover_{k}": v for k, v in skipped.items()})
+            for index, pool in enumerate(pools):
+                observed += 1
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
+                try:
+                    absorb(*self._record_pool(pool, started))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"{pool.mint}: {type(error).__name__}: {error}")
+
+        if self.topics_provider is not None or self.config.include_topics:
+            provider = self.topics_provider or self.discovery
+            try:
+                topics = (
+                    provider.topic_narratives(chain_id=self.config.chain_id)
+                    if hasattr(provider, "topic_narratives")
+                    else []
+                )
+                topic_candidates, skipped_topics = select_topic_candidates(topics)
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"topics: {type(error).__name__}: {error}")
+                topic_candidates, skipped_topics = [], {}
+            if skipped_topics:
+                failure_counts.update({f"topic_{k}": v for k, v in skipped_topics.items()})
+            for index, candidate in enumerate(topic_candidates[: self.config.limit_per_stage]):
+                observed += 1
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
+                try:
+                    absorb(*self._record_topic(candidate, started))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"topic:{candidate.mint}: {type(error).__name__}: {error}")
+
+        for stage in self.config.stages:
+            try:
+                rows = self.discovery.meme_rush(
+                    chain_id=self.config.chain_id,
+                    rank_type=STAGES[stage],
+                    limit=self.config.limit_per_stage,
+                    **self.config.filter_rush_kwargs,
+                )
+            except Exception as error:  # noqa: BLE001 - one bad stage must not end the cycle
+                errors.append(f"{stage}: {type(error).__name__}: {error}")
+                continue
+
+            for index, row in enumerate(rows):
+                observed += 1
+                if index and self.config.enrich and self.config.pacing_delay_seconds > 0:
+                    sleep(self.config.pacing_delay_seconds)
+                try:
+                    absorb(*self._record(row, stage, started))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"{row.contract_address}: {type(error).__name__}: {error}")
+                    continue
+
+        opened = 0
+        entry_skips: dict[str, int] = {}
+        if self.monitor is not None and offered:
+            try:
+                opened, entry_skips, entry_errors = self.monitor.consider(offered)
+                errors.extend(entry_errors)
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"monitor_entry: {type(error).__name__}: {error}")
+
+        summary = CycleSummary(
+            started_at=started,
+            observed=observed,
+            recorded=recorded,
+            eligible=status_counts.get(CandidateStatus.ELIGIBLE_FOR_STRATEGY_REVIEW.value, 0),
+            monitor=status_counts.get(CandidateStatus.MONITOR.value, 0),
+            rejected=status_counts.get(CandidateStatus.REJECT.value, 0),
+            errors=tuple(errors),
+            status_counts=status_counts,
+            failure_counts=failure_counts,
+            opened=opened,
+            entry_skips=entry_skips,
+        )
+        self.recorder.append(
+            EVENT_CYCLE_COMPLETED,
+            entity_id="collector",
+            payload={
+                "started_at": started.isoformat(),
+                "observed": observed,
+                "recorded": recorded,
+                "status_counts": status_counts,
+                "failure_counts": failure_counts,
+                "opened": opened,
+                "entry_skips": entry_skips,
+                "errors": list(errors),
+            },
+        )
+        return summary
+
+    def run_forever(
+        self,
+        cycles: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        on_cycle: Callable[[CycleSummary], None] | None = None,
+    ) -> Iterable[CycleSummary]:
+        """Poll on an interval. ``cycles`` bounds the loop for tests."""
+        summaries: list[CycleSummary] = []
+        completed = 0
+        while cycles is None or completed < cycles:
+            summary = self.run_once(sleep=sleep)
+            summaries.append(summary)
+            if on_cycle is not None:
+                on_cycle(summary)
+            completed += 1
+            if cycles is None or completed < cycles:
+                sleep(self.config.interval_seconds)
+        return summaries
+
+    def _record(
+        self, row: MemeRushRow, stage: str, observed_at: datetime
+    ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
+        return self._grade(
+            row.to_snapshot(observed_at=observed_at),
+            mint=row.contract_address,
+            symbol=row.symbol,
+            stage=stage,
+            observed_at=observed_at,
+            labels=row.labels,
+            buy_count=row.buy_count,
+            sell_count=row.sell_count,
+            market_cap_usd=row.market_cap_usd,
+            holders=row.holders,
+            chain_id=row.chain_id,
+            extra_payload={
+                # Social evidence, journalled because it is the only account of
+                # *why* a token exists that is available while it is minutes old,
+                # and because a study of it is impossible if it was never stored.
+                # Measured coverage 2026-08-19 over 120 rows: text 98.3%,
+                # handle and followers 70.0%.
+                #
+                # Recorded, never acted upon. Whether any of it predicts anything
+                # is a question for a study once outcomes exist; using it to gate
+                # or size today would be a belief rather than a measurement.
+                "narrative_text_en": row.narrative_text_en,
+                "twitter_handle": row.twitter_handle,
+                "twitter_followers": row.twitter_followers,
+                "socials": row.socials or None,
+            },
+        )
+
+    def _trending_pools(self) -> tuple[list[Any], dict[str, int]]:
+        """Fetch and filter established movers.
+
+        Three pages rather than one. Coverage measured 2026-08-22
+        (`study_discovery_coverage.py`): the journal contained only 63% of that
+        day's qualified movers, and one page yields ~20 pools before filtering.
+        Pages are deduplicated by pool address -- the feed overlaps between
+        pages -- and every page still passes through the same `MoverFilter`,
+        so this widens what is *seen*, never what is *accepted*.
+        """
+        from .discovery import select_movers
+
+        seen: set[str] = set()
+        pool_items: list[dict] = []
+        for page in (1, 2, 3):
+            try:
+                payload = self.movers_provider.trending_solana_pools(page=page)
+            except Exception as error:  # noqa: BLE001 - one bad page must not kill the stage
+                print(f"note: trending page {page} unavailable ({type(error).__name__}: {error})")
+                continue
+            for pool in payload.get("data", []) or []:
+                address = str(pool.get("id") or "")
+                if address and address not in seen:
+                    seen.add(address)
+                    pool_items.append(pool)
+        pools, skipped = select_movers({"data": pool_items})
+        return list(pools)[: self.config.limit_per_stage], skipped
+
+    def _record_pool(self, pool: Any, observed_at: datetime) -> tuple[str, tuple[str, ...], dict]:
+        """Grade one trending pool through the same gates as a launchpad row."""
+        from .providers.binance_web3 import VendorClusterLabels
+
+        return self._grade(
+            pool.to_snapshot(observed_at=observed_at),
+            mint=pool.mint,
+            symbol=pool.symbol,
+            stage="mover",
+            observed_at=observed_at,
+            labels=VendorClusterLabels(),
+            buy_count=pool.buys_5m,
+            sell_count=pool.sells_5m,
+            market_cap_usd=pool.market_cap_usd,
+            holders=None,
+        )
+
+    def _record_topic(
+        self, candidate: TopicCandidate, observed_at: datetime
+    ) -> tuple[str, tuple[str, ...], dict]:
+        """Grade one narrative topic candidate."""
+        return self._grade(
+            candidate.to_snapshot(observed_at=observed_at),
+            mint=candidate.mint,
+            symbol=candidate.symbol,
+            stage="topic",
+            observed_at=observed_at,
+            labels=candidate.labels,
+            buy_count=candidate.unique_traders_5m,
+            sell_count=None,
+            market_cap_usd=candidate.market_cap_usd,
+            holders=None,
+            extra_payload={
+                "topic_name": candidate.topic_name,
+                "topic_id": candidate.topic_id,
+                "topic_category": candidate.topic_category,
+                # The narrative's text, journalled so a study of it is possible
+                # at all. `None` where the vendor did not supply it -- an absent
+                # summary is not an empty one, and "" would read as "the topic
+                # had nothing to say".
+                "topic_link": candidate.topic_link,
+                "topic_ai_summary_en": candidate.topic_ai_summary_en,
+                "topic_tags": list(candidate.topic_tags) or None,
+                "topic_net_inflow_1h_usd": candidate.topic_net_inflow_1h_usd,
+                # Per-token inflow, distinct from the topic-level figure above:
+                # a hot narrative with no flow into *this* mint is the copycat
+                # case the clone filter exists to catch.
+                "token_net_inflow_1h_usd": candidate.token_net_inflow_1h_usd,
+                "unique_traders_1h": candidate.unique_traders_1h,
+                "unique_traders_5m": candidate.unique_traders_5m,
+                "smart_money_holders": candidate.smart_money_holders,
+                "kol_holders": candidate.kol_holders,
+                "price_change_24h_pct": candidate.price_change_24h_pct,
+            },
+        )
+
+    def _grade(
+        self,
+        snapshot: TokenSnapshot,
+        *,
+        mint: str,
+        symbol: str,
+        stage: str,
+        observed_at: datetime,
+        labels: Any,
+        buy_count: int | None = None,
+        sell_count: int | None = None,
+        market_cap_usd: float | None = None,
+        holders: int | None = None,
+        chain_id: str = CHAIN_SOLANA,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> tuple[str, tuple[str, ...], dict[str, Any]]:
+        """Enrich, gate and journal one candidate, whatever feed produced it.
+
+        Shared by both discovery sources on purpose. The safety argument does not
+        change with the feed -- only the population does -- so a second grading
+        path would be a second place for the gates to drift.
+        """
+        coverage: float | None = None
+        pair: Any | None = None
+
+        if self.config.enrich:
+            snapshot, pair = self._apply_pair_evidence(snapshot, mint)
+            snapshot, report = enrich_snapshot(
+                snapshot,
+                mint_provider=self.mint_provider,
+                quote_provider=self.quote_provider,
+                security_provider=self.security_provider,
+                intended_order_sol=self.config.intended_order_sol,
+            )
+            coverage = report.coverage_pct
+
+        # For established mover/topic pools with verified low concentration,
+        # developer_selling is not active overhang.
+        if (
+            snapshot.developer_selling is None
+            and stage in {"mover", "topic"}
+            and snapshot.top10_private_holder_pct is not None
+            and snapshot.top10_private_holder_pct
+            <= self.settings.solana_safety.maximum_top10_private_holder_pct
+        ):
+            snapshot = replace(snapshot, developer_selling=False)
+
+
+        if getattr(labels, "reported_fields", None):
+            cluster = assess_vendor_labels(labels, self.settings.clusters)
+        else:
+            cluster = assess_onchain_cluster(
+                snapshot.top10_private_holder_pct,
+                self.settings.clusters,
+                maximum_top10_pct=self.settings.solana_safety.maximum_top10_private_holder_pct,
+            )
+
+        decision = self.safety.evaluate(snapshot, observed_at, cluster=cluster)
+
+        # Recorded, never acted upon. Whether this score predicts anything is a
+        # question for calibration once completed trades exist; using it to size
+        # today would be a belief rather than a measurement.
+        confidence = score_confidence(
+            liquidity_usd=snapshot.liquidity_usd,
+            exit_impact_pct=snapshot.exit_price_impact_pct,
+            cluster_verdict=cluster.verdict.value,
+            buy_share_pct=(
+                100.0 * buy_count / (buy_count + sell_count)
+                if buy_count is not None
+                and sell_count is not None
+                and (buy_count + sell_count) > 0
+                else None
+            ),
+            age_minutes=snapshot.age_minutes,
+            evidence_coverage_pct=coverage,
+        )
+
+        # append_once keeps a retried or overlapping poll from writing the same
+        # observation twice, while still allowing the same mint to be recorded
+        # again on the next cycle. That repetition is the time series.
+        payload = {
+            "stage": stage,
+            "chain_id": chain_id,
+            "symbol": symbol,
+            "observed_at": observed_at.isoformat(),
+            # Forward returns are computed against these later, so they must
+            # be captured now rather than looked up at scoring time.
+            "price_usd": snapshot.price_usd,
+            "liquidity_usd": snapshot.liquidity_usd,
+            "market_cap_usd": market_cap_usd,
+            "holders": holders,
+            "age_minutes": snapshot.age_minutes,
+            "entry_price_impact_pct": snapshot.entry_price_impact_pct,
+            "exit_price_impact_pct": snapshot.exit_price_impact_pct,
+            "top10_private_holder_pct": snapshot.top10_private_holder_pct,
+            "buy_txns_total": buy_count,
+            "sell_txns_total": sell_count,
+            "buy_txns_5m": getattr(pair, "buy_txns_5m", None),
+            "sell_txns_5m": getattr(pair, "sell_txns_5m", None),
+            "volume_5m_usd": snapshot.volume_5m_usd,
+            "volume_1h_usd": getattr(pair, "volume_1h_usd", None),
+            "volume_24h_usd": getattr(pair, "volume_24h_usd", None),
+            "volume_to_liquidity_5m": getattr(pair, "volume_to_liquidity_5m", None),
+            "pair_address": getattr(pair, "pair_address", None),
+            "status": decision.status.value,
+            "failures": list(decision.failures),
+            "warnings": list(decision.warnings),
+            "cluster_verdict": cluster.verdict.value,
+            "cluster_confidence": cluster.confidence,
+            "cluster_metrics": cluster.metrics,
+            "confidence": confidence.value,
+            "confidence_band": confidence.band.value,
+            "confidence_missing": list(confidence.missing),
+            "evidence_coverage_pct": coverage,
+            **(extra_payload or {}),
+        }
+
+        self.recorder.append_once(
+            EVENT_CANDIDATE_OBSERVED,
+            entity_id=mint,
+            payload=payload,
+            idempotency_key=(
+                f"{EVENT_CANDIDATE_OBSERVED}:{mint}:"
+                f"{observed_at.isoformat(timespec='seconds')}"
+            ),
+        )
+        # The monitor needs the mint alongside the journalled fields; the
+        # payload itself is keyed by entity_id in the journal and does not
+        # carry it.
+        return decision.status.value, decision.failures, payload | {"mint": mint}
+
+    def _apply_pair_evidence(
+        self, snapshot: TokenSnapshot, mint: str
+    ) -> tuple[TokenSnapshot, Any | None]:
+        """Overlay pool-level facts. See ``enrichment.apply_pair_evidence``."""
+        return apply_pair_evidence(snapshot, mint, self.pair_provider)

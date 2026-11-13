@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from meme_flight_recorder.env import load_env
 from meme_flight_recorder.providers.helius import HeliusProvider
 
 
@@ -68,6 +69,10 @@ def main() -> None:
     wallets = tuple(args.wallets or registry_wallets(registry))
     if not wallets:
         raise ValueError("No Solana wallets selected")
+    # Every entry point must load .env before reaching a provider. Omitting it
+    # here meant a correctly configured key silently did nothing -- the same
+    # defect this project already fixed once in the collector path.
+    load_env()
     provider = HeliusProvider()
     for address in wallets:
         cursor: str | None = None

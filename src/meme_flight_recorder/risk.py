@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
-from .config import RiskLimits
+from .config import MicroCapitalLimits, RiskLimits
 from .models import Universe
 
 
@@ -16,6 +17,32 @@ class PortfolioState:
     kill_switch: bool = False
 
 
+class CapitalTier(StrEnum):
+    """How the engine sizes at a given funding level.
+
+    The tier is derived from equity rather than configured, so the system
+    adapts as the account is funded or drawn down instead of needing a manual
+    switch at the moment it matters least.
+    """
+
+    UNFUNDED = "unfunded"
+    MICRO = "micro"
+    STANDARD = "standard"
+
+
+def capital_tier(equity_usd: float, micro: MicroCapitalLimits | None) -> CapitalTier:
+    if micro is None:
+        return CapitalTier.STANDARD
+    if equity_usd * micro.position_pct_of_equity / 100 < micro.minimum_viable_position_usd:
+        # Too small to fund a position that can be executed and exited without
+        # costs dominating. Naming this state is more useful than silently
+        # producing sizes that would never fill.
+        return CapitalTier.UNFUNDED
+    if equity_usd < micro.equity_threshold_usd:
+        return CapitalTier.MICRO
+    return CapitalTier.STANDARD
+
+
 @dataclass(frozen=True)
 class RiskDecision:
     approved: bool
@@ -25,8 +52,12 @@ class RiskDecision:
 
 
 class RiskEngine:
-    def __init__(self, limits: RiskLimits) -> None:
+    def __init__(self, limits: RiskLimits, micro: MicroCapitalLimits | None = None) -> None:
         self.limits = limits
+        # Opt-in, like the cluster gates. Without micro limits the engine
+        # behaves exactly as before; with them, small accounts get
+        # catastrophic-loss sizing and pool-relative liquidity checks.
+        self.micro = micro
 
     def approve(
         self,
@@ -34,6 +65,10 @@ class RiskEngine:
         state: PortfolioState,
         entry_price: float,
         stop_price: float | None = None,
+        *,
+        pool_liquidity_usd: float | None = None,
+        estimated_round_trip_cost_pct: float | None = None,
+        proposed_position_usd: float | None = None,
     ) -> RiskDecision:
         if state.kill_switch:
             return RiskDecision(False, "kill_switch_active")
@@ -46,7 +81,28 @@ class RiskEngine:
             return RiskDecision(False, "maximum_open_positions_reached")
         max_open_risk = state.equity_usd * self.limits.maximum_aggregate_open_risk_pct / 100
 
-        if universe == Universe.CEX_ESTABLISHED:
+        micro_mode = self.micro is not None and state.equity_usd < self.micro.equity_threshold_usd
+
+        if micro_mode:
+            assert self.micro is not None
+            # Catastrophic-loss sizing: assume the whole position can be lost,
+            # because a thin meme coin can gap to zero or stop being sellable
+            # before any stop can fill. Percentage-of-equity sizing at this
+            # scale produces positions too small to execute.
+            #
+            # Size adapts to funding: the percentage binds while the account is
+            # small, the dollar cap binds as it grows. An account too small to
+            # fund a viable position is rejected outright rather than being
+            # handed a position it cannot execute or exit.
+            position = min(
+                self.micro.max_position_usd,
+                state.equity_usd * self.micro.position_pct_of_equity / 100,
+                state.equity_usd,
+            )
+            risk = position
+            if position < self.micro.minimum_viable_position_usd:
+                return RiskDecision(False, "position_below_viable_minimum")
+        elif universe == Universe.CEX_ESTABLISHED:
             if stop_price is None or not (0 < stop_price < entry_price):
                 return RiskDecision(False, "invalid_or_missing_stop")
             risk = state.equity_usd * self.limits.risk_per_cex_trade_pct / 100
@@ -57,6 +113,62 @@ class RiskEngine:
             risk = state.equity_usd * self.limits.capital_at_risk_per_solana_trade_pct / 100
             position = risk
 
-        if state.aggregate_open_risk_usd + risk > max_open_risk:
+        if proposed_position_usd is not None:
+            # The caller is sizing (the collector's --position-usd), and every
+            # check below this line must then be applied to the position that
+            # will actually open. Approving the engine's own smaller number and
+            # opening a larger one meant the pool-share and aggregate-exposure
+            # checks were evaluating a trade nobody was going to place.
+            #
+            # Risk follows position because at this scale the position *is* the
+            # risk: a thin meme coin can gap to zero or stop being sellable
+            # before a stop fills, which is measured -- one replayed collapse
+            # fell ~1700x below its stop inside a single candle.
+            if universe == Universe.CEX_ESTABLISHED and not micro_mode:
+                return RiskDecision(False, "caller_sizing_not_supported_for_cex")
+            position = proposed_position_usd
+            risk = position
+            if self.micro is not None and position < self.micro.minimum_viable_position_usd:
+                return RiskDecision(False, "position_below_viable_minimum")
+
+        if micro_mode:
+            assert self.micro is not None
+            open_cap = (
+                state.equity_usd * self.micro.maximum_aggregate_open_position_pct / 100
+            )
+            if state.aggregate_open_risk_usd + position > open_cap:
+                return RiskDecision(False, "aggregate_open_position_exceeded")
+        elif state.aggregate_open_risk_usd + risk > max_open_risk:
             return RiskDecision(False, "aggregate_open_risk_exceeded")
+
+        if self.micro is not None and universe != Universe.CEX_ESTABLISHED:
+            liquidity_reason = self._liquidity(position, pool_liquidity_usd, self.micro)
+            if liquidity_reason:
+                return RiskDecision(False, liquidity_reason)
+            # A trade whose round trip eats most of the expected move is a loss
+            # dressed as an opportunity. At micro size this rejects most
+            # candidates, which is the informative outcome rather than a fault.
+            if estimated_round_trip_cost_pct is None:
+                return RiskDecision(False, "round_trip_cost_unknown")
+            if estimated_round_trip_cost_pct > self.micro.maximum_round_trip_cost_pct:
+                return RiskDecision(False, "round_trip_cost_exceeds_limit")
+
         return RiskDecision(True, "approved", round(position, 2), round(risk, 2))
+
+    @staticmethod
+    def _liquidity(
+        position: float, pool_liquidity_usd: float | None, micro: MicroCapitalLimits
+    ) -> str | None:
+        """Reject on pool depth relative to the order actually being placed.
+
+        Absolute liquidity floors encode an account size. What matters is the
+        share of the pool the order represents, bounded below by a floor that
+        keeps a tiny order out of a pool nobody can exit.
+        """
+        if pool_liquidity_usd is None:
+            return "pool_liquidity_unknown"
+        if pool_liquidity_usd < micro.minimum_pool_liquidity_usd:
+            return "pool_liquidity_below_backstop"
+        if 100.0 * position / pool_liquidity_usd > micro.maximum_pool_share_pct:
+            return "order_too_large_for_pool"
+        return None
