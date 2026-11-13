@@ -92,6 +92,14 @@ def main() -> int:
         default=None,
         help="Fixed dollar position size override (default: 2%% equity sizing).",
     )
+    collect.add_argument(
+        "--alert",
+        action="store_true",
+        help=(
+            "Send position opens/closes to Telegram. Off by default; needs "
+            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env."
+        ),
+    )
 
     scout = sub.add_parser(
         "scout",
@@ -142,6 +150,19 @@ def main() -> int:
     score.add_argument("--min-sample", type=int, default=10)
     score.add_argument("--horizon", default="1h", choices=["30s", "5m", "1h", "1d"])
     score.add_argument("--cost-pct", type=float, default=6.0)
+
+    sub.add_parser(
+        "media-scan",
+        help=(
+            "One bounded pass over the free public media feeds in [media]. "
+            "Journals media_mention events; it cannot gate anything."
+        ),
+    )
+    diary = sub.add_parser(
+        "desk-diary",
+        help="Render the Markdown Desk Diary from the hash-chained journal.",
+    )
+    diary.add_argument("--out", default=None, help="Optional output file path.")
     args = parser.parse_args()
 
     settings = load_settings(args.config)
@@ -160,6 +181,10 @@ def main() -> int:
         return _scout(settings, recorder, args)
     elif args.command == "score-sources":
         return _score_sources(recorder, args)
+    elif args.command == "media-scan":
+        return _media_scan(args, recorder)
+    elif args.command == "desk-diary":
+        return _desk_diary(recorder, args)
     elif args.command == "calibrate":
         return _calibrate(recorder)
     else:
@@ -809,6 +834,161 @@ def _score_sources(recorder: FlightRecorder, args) -> int:
     return 0
 
 
+def _media_scan(args, recorder: FlightRecorder) -> int:
+    """One bounded pass over the free public media feeds.
+
+    Everything here is discovery, never judgement. A mention journals the fact
+    that a public post stated an address at a point in time; it cannot open,
+    size or rank anything, and whether these sources arrive earlier than the
+    collector's own feeds is exactly what `score-sources` will measure once
+    history accumulates. Sources that fail degrade to zero items plus a printed
+    reason -- a dead feed is not a quiet market.
+    """
+    import tomllib
+    from pathlib import Path
+
+    from .providers.media_feeds import (
+        fetch_gnews,
+        fetch_subreddit_new,
+        fetch_telegram_preview,
+    )
+    from .social_intelligence import SocialIngest, SocialSource, build_event
+
+    with Path(args.config).open("rb") as handle:
+        data = tomllib.load(handle)
+    media = data.get("media")
+    if not media:
+        print(
+            "No [media] block in config. Like [scout.filters], this is "
+            "deliberately required: polling sources nobody chose is how noise "
+            "gets mistaken for configuration."
+        )
+        return 1
+
+    ingest = SocialIngest()
+    per_source: dict[str, list[int]] = {}
+
+    # Anonymous feed readers get throttled hard -- pacing between the sources
+    # that tolerate more (Google News, t.me previews) stays short. The scan
+    # runs inside a loop that takes minutes anyway, so slowness here is free.
+    pause_seconds = 4
+
+    def offer(source_name: str, fetched: int) -> None:
+        counts = per_source.setdefault(source_name, [0, 0])
+        counts[0] = fetched
+
+    # Reddit allows roughly one anonymous feed request per long window from a
+    # single IP -- measured live on 2026-08-22: back-to-back polls 429'd, and
+    # even ~30s gaps did not clear it mid-run. So each pass polls exactly ONE
+    # subreddit, chosen deterministically from the clock, and the loop's next
+    # iteration takes the next one. With the collector's ~20-minute cycle every
+    # configured subreddit is still re-read about hourly.
+    subreddits = list(media.get("subreddits", []))
+    if subreddits:
+        rotation_index = int(time.time() // 1200) % len(subreddits)
+        subreddit = subreddits[rotation_index]
+        print(f"  rotating: {len(subreddits)} configured, this pass reads r/{subreddit}")
+        try:
+            items = fetch_subreddit_new(subreddit)
+        except Exception as error:  # noqa: BLE001 - one dead source must not end the scan
+            print(f"  r/{subreddit}: unavailable ({type(error).__name__}: {error})")
+            offer(f"r/{subreddit}", 0)
+        else:
+            for item in items:
+                event = build_event(
+                    SocialSource.REDDIT,
+                    item.author,
+                    item.text,
+                    published_at=item.published_at,
+                    engagement=item.engagement,
+                    external_id=item.external_id,
+                )
+                if ingest.add(event):
+                    _journal_media_mention(recorder, event, item.origin, item.url)
+            print(f"  r/{subreddit}: {len(items)} posts")
+            offer(f"r/{subreddit}", len(items))
+
+    for channel in media.get("telegram_channels", []):
+        try:
+            items = fetch_telegram_preview(channel)
+        except Exception as error:  # noqa: BLE001
+            print(f"  @{channel}: unavailable ({type(error).__name__}: {error})")
+            offer(f"@{channel}", 0)
+            continue
+        if not items:
+            print(f"  @{channel}: no public preview (private or empty channel?)")
+        for item in items:
+            event = build_event(
+                SocialSource.TELEGRAM,
+                item.author,
+                item.text,
+                published_at=item.published_at,
+                external_id=item.external_id,
+            )
+            if ingest.add(event):
+                _journal_media_mention(recorder, event, item.origin, item.url)
+        print(f"  @{channel}: {len(items)} messages")
+        offer(f"@{channel}", len(items))
+        time.sleep(pause_seconds)
+
+    for query in media.get("news_queries", []):
+        try:
+            items = fetch_gnews(query)
+        except Exception as error:  # noqa: BLE001
+            print(f"  gnews[{query}]: unavailable ({type(error).__name__}: {error})")
+            offer(f"gnews[{query}]", 0)
+            continue
+        for item in items:
+            event = build_event(
+                SocialSource.WEB_NEWS,
+                item.author,
+                item.text,
+                published_at=item.published_at,
+                external_id=item.external_id,
+            )
+            if ingest.add(event):
+                _journal_media_mention(recorder, event, item.origin, item.url)
+        print(f"  gnews[{query}]: {len(items)} headlines")
+        offer(f"gnews[{query}]", len(items))
+        time.sleep(pause_seconds)
+
+    reconciliation = ingest.reconciliation()
+    print("\n=== media scan reconciliation ===")
+    print(
+        f"  offered={reconciliation['total_offered']} accepted={reconciliation['accepted']} "
+        f"duplicates_within_run={reconciliation['duplicates']} "
+        f"of_which_forwarded={reconciliation['of_which_forwarded']}"
+    )
+    with_mentions = sum(1 for event in ingest.events if event.mint)
+    credible = sum(1 for event in ingest.events if event.is_credible)
+    print(f"  with literal mint: {with_mentions} | credible (spam < 0.5): {credible}")
+    print("  journal writes are append_once, so repeat scans skip what they already hold.")
+    return 0
+
+
+def _journal_media_mention(recorder: FlightRecorder, event, origin: str, url: str | None) -> None:
+    """Journal one accepted social event, idempotently across runs."""
+    payload = {
+        "source": event.source.value,
+        "origin": origin,
+        "author": event.author,
+        "mint": event.mint,
+        "symbols": list(event.symbols),
+        "urls": list(event.urls),
+        "link": url,
+        "spam_probability": event.spam_probability,
+        "engagement": event.engagement,
+        "published_at": event.published_at.isoformat() if event.published_at else None,
+        "text_excerpt": event.text[:500],
+    }
+    recorder.append_once(
+        "media_mention",
+        entity_id=event.mint or f"{event.source.value}:{event.external_id}",
+        payload=payload,
+        idempotency_key=f"media:{event.source.value}:{event.external_id}",
+    )
+
+
 def _collect(settings, recorder: FlightRecorder, args) -> int:
     """Run the capture loop, wiring only the providers that are available."""
     from .collector import Collector, CollectorConfig
@@ -856,6 +1036,7 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
                 stop_loss_pct=args.stop_loss,
                 readiness_policy=ReadinessPolicy.permissive_for_deep_pools(),
             ),
+            alerts_enabled=getattr(args, "alert", False),
         )
         print(
             f"paper trading ON: pool >= ${args.minimum_pool_usd:,.0f}, "
@@ -950,6 +1131,22 @@ def _collect(settings, recorder: FlightRecorder, args) -> int:
             collector.run_forever(cycles=args.cycles, on_cycle=report)
         except KeyboardInterrupt:
             print("\nstopped; journal is intact.")
+    return 0
+
+
+def _desk_diary(recorder: FlightRecorder, args: Any) -> int:
+    from pathlib import Path
+
+    from .research_team import generate_desk_diary
+
+    markdown = generate_desk_diary(recorder)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown, encoding="utf-8")
+        print(f"wrote desk diary to {out_path}")
+    else:
+        print(markdown)
     return 0
 
 

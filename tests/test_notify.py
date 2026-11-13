@@ -13,6 +13,7 @@ from meme_flight_recorder.notify import (
     DeliveryState,
     configured,
     format_decision,
+    format_position_event,
     send,
 )
 
@@ -90,3 +91,39 @@ class TestMessageContent:
         reasons = tuple(f"reason_{n}" for n in range(10))
         message = format_decision("A", "M", "reject", 0, 4, 0, "level_1", reasons=reasons)
         assert message.count("- reason_") == 3
+
+
+class TestPositionEventMessages:
+    def test_the_full_mint_is_included_not_just_the_ticker(self) -> None:
+        # Five CATE mints in one night: the ticker alone cannot identify a token.
+        message = format_position_event("opened", "MINT_ABC", "CATE")
+        assert "MINT_ABC" in message
+
+    def test_a_non_ascii_symbol_does_not_break_the_message(self) -> None:
+        message = format_position_event("opened", "MINT_ABC", "\U0001f680中")
+        assert message.isascii()
+
+    def test_an_empty_symbol_still_produces_a_message(self) -> None:
+        message = format_position_event("closed", "MINT_ABC", "")
+        assert "CLOSED ?" in message
+
+    def test_every_message_says_it_is_paper(self) -> None:
+        message = format_position_event("opened", "MINT_ABC", "AAA")
+        assert "PAPER ONLY" in message
+
+    def test_the_pnl_sign_is_explicit(self) -> None:
+        # A bare "-0.71" and a missing pnl read identically at a glance; the
+        # sign is the whole content of a close alert.
+        loss = format_position_event(
+            "closed", "MINT_ABC", "AAA", realised_usd=-0.7102, reason="security_liquidity_withdrawn"
+        )
+        gain = format_position_event("closed", "MINT_ABC", "AAA", realised_usd=1.5)
+        assert "pnl -$0.7102" in loss
+        assert "reason security_liquidity_withdrawn" in loss
+        assert "pnl +$1.5000" in gain
+
+    def test_the_entry_price_is_not_lost_to_rounding(self) -> None:
+        # Meme prices routinely sit at 6+ decimal places; an alert that rounds
+        # them away shows a price of $0.00, which is not what was paid.
+        message = format_position_event("opened", "MINT_ABC", "AAA", price_usd=0.00000153)
+        assert "$0.00000153" in message

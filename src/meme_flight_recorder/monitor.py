@@ -42,6 +42,7 @@ from .exits import (
 )
 from .journal import FlightRecorder
 from .models import CandidateStatus, Universe
+from .notify import format_position_event
 from .position_store import open_positions, save_closed, save_opened
 from .positions import apply_exit, mark, open_position
 from .readiness import (
@@ -152,18 +153,36 @@ class PositionMonitor:
         pair_provider: Any,
         config: MonitorConfig | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        alerts_enabled: bool = False,
     ) -> None:
         self.settings = settings
         self.recorder = recorder
         self.pair_provider = pair_provider
         self.config = config or MonitorConfig()
         self.clock = clock
+        self.alerts_enabled = alerts_enabled
         self.risk = RiskEngine(settings.risk, settings.micro)
         # Consecutive failed observations per mint. Held in memory rather than
         # journalled: after a restart a position starts with a clean slate,
         # which errs toward keeping a position rather than closing one on a
         # count that predates the process.
         self._failed_checks: dict[str, int] = {}
+
+    def _alert(self, message: str, errors: list[str]) -> None:
+        """Send one Telegram alert, reporting failure instead of swallowing it.
+
+        Off unless the caller enabled alerts, matching the notify module's own
+        rule that importing this code cannot message anyone. A dropped alert is
+        appended to the cycle's error list: silence about a failed send is how
+        an operator concludes the market was quiet when the network was.
+        """
+        if not self.alerts_enabled:
+            return
+        from .notify import send
+
+        delivery = send(message, enabled=True)
+        if not delivery.delivered and delivery.state.value != "disabled":
+            errors.append(f"alert {delivery.state.value}: {delivery.detail}")
 
     # ------------------------------------------------------------------ exits
 
@@ -259,6 +278,20 @@ class PositionMonitor:
                 save_closed(self.recorder, exited)
                 self._failed_checks.pop(mint, None)
                 closed += 1
+                self._alert(
+                    format_position_event(
+                        "closed",
+                        exited.mint,
+                        exited.symbol,
+                        realised_usd=exited.realised_usd,
+                        reason=(
+                            exited.close_reason.value
+                            if exited.close_reason is not None
+                            else None
+                        ),
+                    ),
+                    errors,
+                )
 
         return len(live), closed, errors
 
@@ -406,6 +439,16 @@ class PositionMonitor:
             save_opened(self.recorder, position)
             live[mint] = position
             opened += 1
+            self._alert(
+                format_position_event(
+                    "opened",
+                    mint,
+                    position.symbol,
+                    price_usd=price,
+                    position_usd=sized_usd,
+                ),
+                errors,
+            )
 
         return opened, skipped, errors
 

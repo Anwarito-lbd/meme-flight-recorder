@@ -47,10 +47,31 @@ echo [%date% %time%] --- collector starting --- >> "%LOGFILE%"
 .venv\Scripts\python.exe -m meme_flight_recorder.cli collect ^
   --source both ^
   --paper-trade ^
+  --alert ^
   --position-usd 10.0 ^
   --max-open 5 ^
-  --interval 300 ^
-  --limit 20 >> "%LOGFILE%" 2>&1
-echo [%date% %time%] --- exited with code %ERRORLEVEL%, restarting in 60s --- >> "%LOGFILE%"
+  --limit 20 ^
+  --cycles 1 >> "%LOGFILE%" 2>&1
+echo [%date% %time%] --- collector exited with code %ERRORLEVEL% --- >> "%LOGFILE%"
+
+REM One bounded collect cycle, then one scout pass, forever. Sequential on
+REM purpose: the scout and the collector draw on the same provider quotas, and
+REM concurrent loops re-created the 429 circuit-breaker incident. The scout is
+REM the operator's mandate engine -- confluence verdicts and the alert stream --
+REM and it had produced only 44 journalled evaluations against the collector's
+REM 60,238 observations because nothing ever ran it unattended.
+echo [%date% %time%] --- scout starting --- >> "%LOGFILE%"
+.venv\Scripts\python.exe -m meme_flight_recorder.cli scout ^
+  --level level_2 ^
+  --alert ^
+  --limit 40 >> "%LOGFILE%" 2>&1
+echo [%date% %time%] --- scout exited with code %ERRORLEVEL% --- >> "%LOGFILE%"
+
+REM One bounded media pass: a rotating public subreddit, curated t.me previews,
+REM Google News RSS. Discovery only -- mentions are journalled and later ranked
+REM by score-sources; nothing here can gate or trade.
+echo [%date% %time%] --- media scan starting --- >> "%LOGFILE%"
+.venv\Scripts\python.exe -m meme_flight_recorder.cli media-scan >> "%LOGFILE%" 2>&1
+echo [%date% %time%] --- media scan exited with code %ERRORLEVEL%, restarting in 60s --- >> "%LOGFILE%"
 timeout /t 60 /nobreak >nul
 goto loop

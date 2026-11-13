@@ -39,7 +39,7 @@ from .clusters import assess_onchain_cluster, assess_vendor_labels
 from .confidence import score_confidence
 from .config import Settings
 from .discovery import TopicCandidate, select_topic_candidates
-from .enrichment import enrich_snapshot
+from .enrichment import apply_pair_evidence, enrich_snapshot
 from .journal import FlightRecorder
 from .models import CandidateStatus, TokenSnapshot
 from .providers.binance_web3 import (
@@ -346,10 +346,31 @@ class Collector:
         )
 
     def _trending_pools(self) -> tuple[list[Any], dict[str, int]]:
-        """Fetch and filter established movers."""
+        """Fetch and filter established movers.
+
+        Three pages rather than one. Coverage measured 2026-08-22
+        (`study_discovery_coverage.py`): the journal contained only 63% of that
+        day's qualified movers, and one page yields ~20 pools before filtering.
+        Pages are deduplicated by pool address -- the feed overlaps between
+        pages -- and every page still passes through the same `MoverFilter`,
+        so this widens what is *seen*, never what is *accepted*.
+        """
         from .discovery import select_movers
 
-        pools, skipped = select_movers(self.movers_provider.trending_solana_pools())
+        seen: set[str] = set()
+        pool_items: list[dict] = []
+        for page in (1, 2, 3):
+            try:
+                payload = self.movers_provider.trending_solana_pools(page=page)
+            except Exception as error:  # noqa: BLE001 - one bad page must not kill the stage
+                print(f"note: trending page {page} unavailable ({type(error).__name__}: {error})")
+                continue
+            for pool in payload.get("data", []) or []:
+                address = str(pool.get("id") or "")
+                if address and address not in seen:
+                    seen.add(address)
+                    pool_items.append(pool)
+        pools, skipped = select_movers({"data": pool_items})
         return list(pools)[: self.config.limit_per_stage], skipped
 
     def _record_pool(self, pool: Any, observed_at: datetime) -> tuple[str, tuple[str, ...], dict]:
@@ -542,46 +563,5 @@ class Collector:
     def _apply_pair_evidence(
         self, snapshot: TokenSnapshot, mint: str
     ) -> tuple[TokenSnapshot, Any | None]:
-        """Overlay pool-level facts, which describe the trade's actual route.
-
-        The pair itself is returned alongside the snapshot rather than discarded,
-        because flow analysis needs the volume and transaction-count fields the
-        snapshot has no home for. Dropping them here is what left the journal
-        unable to answer whether demand was organic.
-        """
-        if self.pair_provider is None:
-            return snapshot, None
-        try:
-            pair = self.pair_provider.deepest_pair(mint)
-        except Exception:  # noqa: BLE001 - a dead provider must not pass a gate
-            return snapshot, None
-        if pair is None:
-            return snapshot, None
-        # Overlay, never erase. `pair.liquidity_usd` is None whenever DexScreener
-        # knows the pair but reports no depth for it, which is the normal case
-        # before graduation: measured 2026-08-19 over 24 pre-bond candidates, a
-        # pair was found for 13 and *every one* carried None while the discovery
-        # feed had a real figure -- $11,421 in one case, overwritten with nothing.
-        #
-        # That one unguarded assignment is the single largest rejection reason in
-        # the project: `liquidity_unknown` fires on 28,678 observations, and
-        # 5,329 mints were rejected on it *and nothing else*. The gate was right
-        # every time; it was reading a value this line had just destroyed.
-        #
-        # `is not None` rather than `or`, unlike the two fields below it: a pool
-        # measured at exactly 0.0 is a drained pool, which is evidence the exit
-        # engine acts on, and `or` would silently discard it.
-        return (
-            replace(
-                snapshot,
-                liquidity_usd=(
-                    pair.liquidity_usd
-                    if pair.liquidity_usd is not None
-                    else snapshot.liquidity_usd
-                ),
-                age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
-                price_usd=pair.price_usd or snapshot.price_usd,
-                volume_5m_usd=pair.volume_5m_usd,
-            ),
-            pair,
-        )
+        """Overlay pool-level facts. See ``enrichment.apply_pair_evidence``."""
+        return apply_pair_evidence(snapshot, mint, self.pair_provider)

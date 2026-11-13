@@ -102,6 +102,38 @@ def format_decision(
     return "\n".join(lines)
 
 
+def format_position_event(
+    event: str,
+    mint: str,
+    symbol: str,
+    *,
+    price_usd: float | None = None,
+    position_usd: float | None = None,
+    realised_usd: float | None = None,
+    reason: str | None = None,
+) -> str:
+    """One paper-book lifecycle event as a message.
+
+    Same rules as `format_decision`: identity is the full mint, never just the
+    ticker; the symbol is ascii-safe because a live emoji symbol once killed a
+    scan mid-run; and every message says it is paper, because an operator who
+    has to remember which book produced an alert will eventually guess wrong.
+    """
+    safe_symbol = symbol.encode("ascii", "replace").decode("ascii")[:16] or "?"
+    lines = [f"{event.upper()} {safe_symbol}", f"mint {mint}"]
+    if price_usd is not None:
+        lines.append(f"price ${price_usd:.8f}".rstrip("0").rstrip("."))
+    if position_usd is not None:
+        lines.append(f"size ${position_usd:.2f}")
+    if realised_usd is not None:
+        sign = "+" if realised_usd >= 0 else "-"
+        lines.append(f"pnl {sign}${abs(realised_usd):.4f}")
+    if reason:
+        lines.append(f"reason {reason}")
+    lines.append("PAPER ONLY - nothing was signed or broadcast.")
+    return "\n".join(lines)
+
+
 def send(message: str, *, enabled: bool = False, timeout: int = 10) -> DeliveryResult:
     """Deliver one message, or say precisely why it was not delivered.
 

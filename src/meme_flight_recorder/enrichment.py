@@ -60,6 +60,60 @@ class EnrichmentReport:
         return round(100.0 * len(self.resolved) / total, 1)
 
 
+class _PairProvider(Protocol):
+    def deepest_pair(self, mint: str) -> Any: ...
+
+
+def apply_pair_evidence(
+    snapshot: TokenSnapshot, mint: str, pair_provider: _PairProvider | None
+) -> tuple[TokenSnapshot, Any | None]:
+    """Overlay pool-level facts, which describe the trade's actual route.
+
+    The pair itself is returned alongside the snapshot rather than discarded,
+    because flow analysis needs the volume and transaction-count fields the
+    snapshot has no home for. Dropping them here is what left the journal
+    unable to answer whether demand was organic.
+
+    This lives here, rather than on ``Collector``, so that every caller that
+    grades a candidate overlays pool evidence identically. A second copy would
+    be a second place for the gates to drift.
+    """
+    if pair_provider is None:
+        return snapshot, None
+    try:
+        pair = pair_provider.deepest_pair(mint)
+    except Exception:  # noqa: BLE001 - a dead provider must not pass a gate
+        return snapshot, None
+    if pair is None:
+        return snapshot, None
+    # Overlay, never erase. `pair.liquidity_usd` is None whenever DexScreener
+    # knows the pair but reports no depth for it, which is the normal case
+    # before graduation: measured 2026-08-19 over 24 pre-bond candidates, a
+    # pair was found for 13 and *every one* carried None while the discovery
+    # feed had a real figure -- $11,421 in one case, overwritten with nothing.
+    #
+    # That one unguarded assignment is the single largest rejection reason in
+    # the project: `liquidity_unknown` fires on 28,678 observations, and
+    # 5,329 mints were rejected on it *and nothing else*. The gate was right
+    # every time; it was reading a value this line had just destroyed.
+    #
+    # `is not None` rather than `or`, unlike the two fields below it: a pool
+    # measured at exactly 0.0 is a drained pool, which is evidence the exit
+    # engine acts on, and `or` would silently discard it.
+    return (
+        replace(
+            snapshot,
+            liquidity_usd=(
+                pair.liquidity_usd if pair.liquidity_usd is not None else snapshot.liquidity_usd
+            ),
+            age_minutes=pair.pair_age_minutes or snapshot.age_minutes,
+            price_usd=pair.price_usd or snapshot.price_usd,
+            volume_5m_usd=pair.volume_5m_usd,
+        ),
+        pair,
+    )
+
+
 def enrich_snapshot(
     snapshot: TokenSnapshot,
     *,

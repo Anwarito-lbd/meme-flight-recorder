@@ -21,6 +21,7 @@ from meme_flight_recorder.exits import ExitReason
 from meme_flight_recorder.journal import FlightRecorder
 from meme_flight_recorder.models import CandidateStatus
 from meme_flight_recorder.monitor import MonitorConfig, PositionMonitor
+from meme_flight_recorder.notify import DeliveryResult, DeliveryState
 from meme_flight_recorder.paper import PaperBroker
 from meme_flight_recorder.position_store import (
     closed_positions,
@@ -498,19 +499,34 @@ def test_maturity_policy_cannot_admit_a_failed_candidate() -> None:
 
 
 def book_at_equity(
-    folder: str, equity_usd: float, maximum_open_positions: int | None = None
+    folder: str,
+    equity_usd: float,
+    maximum_open_positions: int | None = None,
+    maximum_aggregate_open_position_pct: float | None = None,
 ) -> tuple[FlightRecorder, Any]:
     """A journal plus settings pinned to a known equity.
 
     Pinned rather than taken from `.env`, because the aggregate cap is a
     percentage of equity and a test reading the operator's live balance would
-    change its own meaning the next time that balance is edited.
+    change its own meaning the next time that balance is edited. The same
+    applies to the risk limits themselves: the 2026-08-22 record-acceleration
+    change moved `maximum_open_positions` and the aggregate percentage in
+    config, and every test below pins the numbers it was written against so
+    future config edits cannot silently rewrite what they prove.
     """
     config_settings = replace(settings(), starting_equity_usd=equity_usd)
     if maximum_open_positions is not None:
         config_settings = replace(
             config_settings,
             risk=replace(config_settings.risk, maximum_open_positions=maximum_open_positions),
+        )
+    if maximum_aggregate_open_position_pct is not None:
+        config_settings = replace(
+            config_settings,
+            micro=replace(
+                config_settings.micro,
+                maximum_aggregate_open_position_pct=maximum_aggregate_open_position_pct,
+            ),
         )
     return recorder(folder), config_settings
 
@@ -531,14 +547,14 @@ def sized_monitor(
 
 
 def test_position_count_cap_binds_within_a_single_cycle() -> None:
-    """`[risk] maximum_open_positions = 2` must actually stop the third entry.
+    """`[risk] maximum_open_positions` must actually stop the next entry.
 
     The book cannot open its whole capacity in one pass: `live` grows as
     positions open, so the state has to be rebuilt per candidate rather than
     once per cycle.
     """
     with TemporaryDirectory() as folder:
-        book, config_settings = book_at_equity(folder, 50.0)
+        book, config_settings = book_at_equity(folder, 50.0, maximum_open_positions=2)
         agent = sized_monitor(book, config_settings, 10.0)
         candidates = [candidate(mint=f"MINT_{index}") for index in range(4)]
         opened, skipped, errors = agent.consider(candidates)
@@ -549,7 +565,7 @@ def test_position_count_cap_binds_within_a_single_cycle() -> None:
 def test_position_count_cap_counts_positions_held_from_earlier_cycles() -> None:
     """Exposure is a property of the book, not of one cycle."""
     with TemporaryDirectory() as folder:
-        book, config_settings = book_at_equity(folder, 50.0)
+        book, config_settings = book_at_equity(folder, 50.0, maximum_open_positions=2)
         sized_monitor(book, config_settings, 10.0).consider(
             [candidate(mint="MINT_0"), candidate(mint="MINT_1")]
         )
@@ -569,7 +585,12 @@ def test_aggregate_exposure_cap_binds_on_dollars_not_on_count() -> None:
     still allow it.
     """
     with TemporaryDirectory() as folder:
-        book, config_settings = book_at_equity(folder, 50.0, maximum_open_positions=10)
+        book, config_settings = book_at_equity(
+            folder,
+            50.0,
+            maximum_open_positions=10,
+            maximum_aggregate_open_position_pct=50.0,
+        )
         agent = sized_monitor(book, config_settings, 10.0)
         candidates = [candidate(mint=f"MINT_{index}") for index in range(3)]
         opened, skipped, errors = agent.consider(candidates)
@@ -595,3 +616,112 @@ def test_pool_share_is_checked_against_the_size_that_actually_opens() -> None:
         opened, skipped, _ = agent.consider([candidate(liquidity_usd=5_500.0)])
         assert opened == 0
         assert skipped.get("risk:order_too_large_for_pool") == 1, skipped
+
+
+# -------------------------------------------------------------------- alerts
+
+
+def alerting_monitor(
+    book: FlightRecorder,
+    provider: Any,
+    clock: Any,
+    **config: Any,
+) -> PositionMonitor:
+    """A monitor with alerts on; tests monkeypatch `notify.send` to observe."""
+    config.setdefault("readiness_policy", ANY_MATURITY)
+    return PositionMonitor(
+        settings(),
+        book,
+        provider,
+        config=MonitorConfig(**config),
+        clock=clock,
+        alerts_enabled=True,
+    )
+
+
+def test_an_opened_position_alerts_with_identity_and_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[str] = []
+
+    def capture(message: str, **_: Any) -> Any:
+        sent.append(message)
+        return DeliveryResult(DeliveryState.SENT)
+
+    monkeypatch.setattr("meme_flight_recorder.notify.send", capture)
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, _, errors = alerting_monitor(
+            book, FakePairProvider(), lambda: NOW
+        ).consider([candidate()])
+        assert opened == 1, errors
+        assert errors == []
+        assert len(sent) == 1
+        assert "OPENED AAA" in sent[0]
+        # Identity is the mint address, never the ticker.
+        assert "MINT_A" in sent[0]
+        assert "PAPER ONLY" in sent[0]
+
+
+def test_a_closed_position_alerts_with_pnl_and_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[str] = []
+
+    def capture(message: str, **_: Any) -> Any:
+        sent.append(message)
+        return DeliveryResult(DeliveryState.SENT)
+
+    monkeypatch.setattr("meme_flight_recorder.notify.send", capture)
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        agent = alerting_monitor(
+            book,
+            FakePairProvider(FakePair(0.001, 120_000.0)),
+            lambda: NOW,
+            maximum_hold_minutes=1,
+        )
+        agent.consider([candidate()])
+
+        later = NOW + timedelta(minutes=5)
+        agent.clock = lambda: later
+        live, closed, errors = agent.manage_open()
+        assert closed == 1, (live, errors)
+        assert errors == []
+        close_messages = [m for m in sent if m.startswith("CLOSED")]
+        assert len(close_messages) == 1
+        assert "MINT_A" in close_messages[0]
+        # The pnl sign and the reason are the whole content of a close alert.
+        assert "pnl -$" in close_messages[0]
+        assert "reason time_limit_reached" in close_messages[0]
+
+
+def test_a_dropped_alert_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Silence about a failed send reads as a quiet market."""
+
+    def fail(message: str, **_: Any) -> Any:
+        return DeliveryResult(DeliveryState.FAILED, "HTTP 500: down")
+
+    monkeypatch.setattr("meme_flight_recorder.notify.send", fail)
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, _, errors = alerting_monitor(
+            book, FakePairProvider(), lambda: NOW
+        ).consider([candidate()])
+        assert opened == 1
+        assert any("alert failed" in error for error in errors), errors
+
+
+def test_alerts_are_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default monitor must not message anyone."""
+
+    def explode(message: str, **_: Any) -> Any:
+        raise AssertionError("send must not be called when alerts are disabled")
+
+    monkeypatch.setattr("meme_flight_recorder.notify.send", explode)
+    with TemporaryDirectory() as folder:
+        book = recorder(folder)
+        opened, _, _ = monitor(book, FakePairProvider()).consider([candidate()])
+        assert opened == 1

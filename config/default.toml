@@ -4,6 +4,18 @@ database_path = "data/flight_recorder.db"
 starting_equity_usd = 40.0
 stale_after_seconds = 120
 
+[media]
+# Free public media feeds, polled by `cli media-scan`. Public information only:
+# public subreddits, PUBLIC telegram channels via their t.me/s web previews,
+# and Google News RSS. No logins, no paid groups, no X (pay-per-read). A mint
+# is recorded only when a Solana address appears literally in the text --
+# tickers are captured separately and are never identity.
+subreddits = ["SolanaMemeCoins", "CryptoMoonShots", "memecoins", "solana"]
+# Operator-curated list of PUBLIC channel names (without @). Empty until you
+# name channels worth watching; private or paid channels must not go here.
+telegram_channels = []
+news_queries = ["solana memecoin", "memecoin launch"]
+
 [safety.cex]
 minimum_age_minutes = 10080
 minimum_liquidity_usd = 1000000.0
@@ -51,7 +63,12 @@ require_bundle_evidence = false
 risk_per_cex_trade_pct = 0.5
 capital_at_risk_per_solana_trade_pct = 0.25
 maximum_daily_loss_pct = 1.0
-maximum_open_positions = 2
+# 2026-08-22: 2 -> 4, PAPER RECORD ACCELERATION ONLY (spec:
+# docs/superpowers/specs/2026-08-22-late-emergence-and-coverage-rules.md).
+# The evidence gate needs ~26 more forward trades; at 2 slots the book could
+# not answer within weeks. Per-trade economics are unchanged by concurrency
+# and fewer book_full skips means less selection bias. Revert at promotion.
+maximum_open_positions = 4
 maximum_aggregate_open_risk_pct = 1.0
 consecutive_loss_limit = 3
 
@@ -89,7 +106,7 @@ maximum_round_trip_cost_pct = 8.0
 # with an absolute backstop. An absolute floor alone encodes an account size.
 maximum_pool_share_pct = 0.5
 minimum_pool_liquidity_usd = 5000.0
-maximum_aggregate_open_position_pct = 50.0
+maximum_aggregate_open_position_pct = 80.0
 
 # --------------------------------------------------------------------------
 # The memecoin scout: the operator's execution mandate, as computed thresholds.

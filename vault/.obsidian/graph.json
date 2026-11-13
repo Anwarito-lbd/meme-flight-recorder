@@ -1,0 +1,43 @@
+{
+  "collapse-filter": false,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "path:Home",
+      "color": { "a": 1, "rgb": 3719160 }
+    },
+    {
+      "query": "path:Architecture",
+      "color": { "a": 1, "rgb": 2278750 }
+    },
+    {
+      "query": "path:Studies",
+      "color": { "a": 1, "rgb": 16092939 }
+    },
+    {
+      "query": "path:Risk-and-Math",
+      "color": { "a": 1, "rgb": 15684436 }
+    },
+    {
+      "query": "path:Invariants",
+      "color": { "a": 1, "rgb": 11108599 }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1.15,
+  "lineSizeMultiplier": 1.0,
+  "collapse-forces": false,
+  "centerStrength": 0.45,
+  "repelStrength": 12.0,
+  "linkStrength": 1.0,
+  "linkDistance": 260,
+  "scale": 1.0,
+  "close": false
+}

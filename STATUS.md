@@ -1,7 +1,176 @@
-# Status — 2026-08-15
+# Status — 2026-08-22
 
 Read this first. It is the handoff for anyone, or any session, picking the
 project up cold.
+
+## 2026-08-22 (close): promotion policy is now a signed contract
+
+The operator chose **proof-first at $50** and a **stricter live trigger**: the
+evidence gate AND at least one new-signal study passing its pre-registered bar.
+Full terms in `docs/superpowers/specs/2026-08-22-promotion-policy.md` — binding,
+including what happens on failure at n=30 and n=50. No manual override path
+exists by design.
+
+## 2026-08-22 (night, later): free media discovery is live
+
+`cli media-scan` polls three free public sources and journals `media_mention`
+events through the existing `social_intelligence` bus (literal-address mint
+rule enforced; tickers captured separately, never identity; spam scored and
+retained, never silently dropped):
+
+- **Reddit** via the public `/.rss` Atom feed. The `.json` endpoint 403-blocks
+  datacenter traffic outright, and anonymous feed reads throttle to roughly one
+  request per long window -- both measured live. So each pass rotates exactly
+  ONE configured subreddit, chosen from the clock; with the ~20-minute loop
+  every subreddit re-reads about hourly.
+- **Telegram public previews** (`t.me/s/<channel>`) — parser built and tested;
+  the channel list in `[media]` starts empty because naming public channels is
+  an operator decision. Private or paid channels are excluded by rule.
+- **Google News RSS** per query — 100 headlines/query, works unthrottled.
+
+Everything is append_once-idempotent across runs, degrades per-source with a
+printed reason, and cannot gate anything: mentions are discovery evidence whose
+value `score-sources` will rank once history exists. Wired into
+`run_collector.bat` after the scout step. 650 tests pass; ruff clean.
+
+## 2026-08-22 (night): preflight surfaces Telegram, discovery widened to 3 pages, tests pinned
+
+Three follow-throughs from the acceleration work:
+
+1. **Preflight now reports Telegram state as a NOTE, never a failure.**
+   Configured vs NOT CONFIGURED are printed distinctly (naming whichever env
+   var is absent), but an unfilled key cannot block collection -- alerts are
+   the operator's eyes, not a dependency of the book.
+2. **The movers feed fetches three trending pages, deduplicated by pool
+   address**, instead of one (~20 pools). Coverage measured 63% the same day;
+   two more pages is the cheapest available widening. Every pool still passes
+   the same `MoverFilter`, so what is *seen* grows and what is *accepted*
+   does not. A failing page degrades to fewer pages rather than killing the
+   stage.
+3. **Three exposure-cap tests now pin their own limits** via an extended
+   `book_at_equity(..., maximum_open_positions=..., maximum_aggregate_open_position_pct=...)`.
+   They were reading live config, so this file's own record-acceleration edit
+   silently changed what they proved -- exactly the trap the helper's
+   docstring warned about, caught by running the suite after a config change.
+
+Operational note: `run_collector.bat` uses `--cycles 1`, so every iteration is
+a fresh interpreter and code/config edits go live on the next cycle by
+construction. Confirmed the same hour: after the capacity edit the book opened
+its first new positions since 2026-08-15 (TRUMP, CATE) without any manual
+restart. 644 tests pass; ruff clean across src/scripts/tests.
+
+## 2026-08-22 (evening): late emergence, discovery coverage, record acceleration
+
+Three more pre-specified items executed per
+`docs/superpowers/specs/2026-08-22-late-emergence-and-coverage-rules.md`, rules
+committed before their data was fetched.
+
+**Study L — late emergence: arms thin, hours-scale outcomes stand.** Of 27,367
+distinct priced mints, 18,878 were first observed >=7 days ago. Re-priced today
+through DexScreener's batch endpoint (repo `get_json` -- note: raw urllib gets
+Cloudflare-403'd on every call; the provider's user-agent is load-bearing, the
+fifth time running-it-for-real found what tests could not). Only **110 of
+18,878 (0.58%)** remain quoted at any >=$5k venue: long-horizon death is worse
+than the recorded 84.2%, not better. But among those 110 survivors, **25.5%
+are >=2x their observation price today and 12.7% are >=5x** -- against 0% at
+2x in the 48h arm (n=32 priced). Per the rule the arms were thin (110 < 150),
+so this is descriptive only and **no mandatory outcome re-run is triggered**.
+The shape it describes matters anyway: the tail lives past day 7. That is
+independent support for the book's current hold-to-7-days policy -- positions
+that survive are exactly the ones whose payoff arrives late.
+
+**Study C — discovery coverage: 63.4%.** Of 41 qualified movers on today's
+trending feed (liquidity >=$50k, pair age >=2d -- the population the deep-pool
+rule trades), the journal contains 26. In the rule's ambiguous band. Note the
+feed itself caps at ~20 pools/page; three pages were fetched. Decision:
+selection remains the frontier; widening discovery (more pages, a second
+movers source) stays a cheap follow-up rather than an emergency.
+
+**Action A — forward-record acceleration applied.** `[risk]
+maximum_open_positions` 2 -> 4 and `[risk.micro].maximum_aggregate_open_position_pct`
+50 -> 80 ($40 of the $50 paper account). Paper-only measurement speedup with
+per-trade economics unchanged; fewer `book_full` skips means less cycle-order
+selection bias, not more. **Reverts at promotion review** -- the live sizing
+decision is made there, not inherited from here.
+
+Unchanged from the earlier sessions today: established-population line CLOSED,
+concentration gate validated (55%/38%), winner acceptance 7% vs deaths' 15%,
+collector+scout interleaved loop running under WMI-detached `run_collector.bat`,
+Telegram end-to-end still blocked only on the operator filling the two `.env`
+keys.
+
+## 2026-08-22 (later): three pre-registered results, one loop redesign
+
+**Established-population widening: CLOSED.** Open work item 0 executed per
+`docs/superpowers/specs/2026-08-22-established-widening-decision-rule.md`, rule
+committed before the run. 17 spot-listed meme bases x 700 days on Binance
+(34/34 series cached; period 2024-09-21..2026-08-22 contains both a sector
+uptrend and the downtrend the original run measured). 1,096,664 bars walked,
+all reconciled. Held-out half n=79: expectancy −$0.0080/trade after costs,
+PF **0.233**. The zero-cost arm — the arm that separates "no gross edge" from
+"edge eaten by fees" — read held-out PF **0.842**, below the pre-committed
+[0.9, 1.1] no-information band. **The breakout signal carries no gross
+information on this population across both regimes. This line closes.** The
+deep-pool Solana book is the only remaining forward path.
+
+**Concentration gate validated on real outcomes.** `study_concentration_value.py`
+re-ran at n=774 priced (up from n=6): death rate **55% above** the 30% threshold
+vs **38% below**. The gate buys survival, which is what it is for; its own
+verdict stands — leave it alone. Recorded for a possible future study only:
+the bands are non-monotonic (30–50% reads safest at 26%, n=65) — a refinement
+question, not a config change.
+
+**Winner-recall refreshed post liquidity-fix.** Acceptance among big winners
+rose 0% → **7%** (n=97), but deaths are still accepted more often (15%, n=749).
+`holder_concentration_excessive` remains the dominant winner-killer (100 of the
+rejections); the route/impact unknowns behind it are stale history now that the
+keyed Jupiter quota is live. Selection is still survival-selection, not
+return-selection.
+
+**Operational finding: the mandate engine was never running.** Against 60,238
+journalled observations there were exactly **44** `scout_candidate_evaluated`
+events — the scout existed but nothing ran it unattended, so the confluence
+verdicts and the alert stream it exists to produce never flowed.
+`run_collector.bat` now interleaves **one bounded collect cycle → one scout
+pass (`--level level_2 --alert`) → repeat**, sequentially by design so the two
+never draw on the same provider quotas concurrently. Level 2 was chosen because
+it is the highest level measured reachable (3 signals; a candidate has hit 5).
+The restart also moves process creation to WMI so the loop survives the session
+that launched it — the previous foreground-spawned copy silently died with its
+parent around 15:32, which is exactly how an unattended night loses its hours.
+
+Not yet done here: Telegram end-to-end remains blocked on the operator filling
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` in `.env`; everything downstream of
+that is wired and tested.
+
+## 2026-08-22: position alerts are wired into the paper book
+
+`collect --paper-trade --alert` now sends a Telegram message on every position
+open and every close (pnl with an explicit sign, exit reason, full mint). The
+scout's `--alert` already existed; this closes the collector half, which is the
+path that actually opens positions.
+
+Design, held to the notify module's two rules:
+
+- **Off unless enabled.** `PositionMonitor` grew an `alerts_enabled` flag,
+  default False. A default-constructed monitor never calls `send`, and the new
+  tests assert that in both directions.
+- **A dropped alert is reported.** Delivery failures land in the cycle's error
+  list (`alert failed: ...`) instead of vanishing, so a network outage cannot
+  masquerade as a quiet market.
+- Formatting is pure and lives in `notify.format_position_event`; sending stays
+  lazy inside `monitor._alert`. `run_collector.bat` now passes `--alert`.
+
+644 tests pass; ruff clean. Not yet verified end to end against Telegram:
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are empty in `.env` (the operator
+fills those by their own hand). Until they are set, delivery returns
+`not_configured`, which is correct and distinct from failed.
+
+Operations state: the collector was restarted unattended under
+`run_collector.bat` at 2026-08-22 11:04 local, and a Startup-folder shortcut
+(`MemeFlightCollector.lnk`) now relaunches it at logon — Task Scheduler needed
+elevation this session did not have. Note the previous foreground run died with
+the host: its last cycle in the log is 2026-08-20 15:23.
 
 ## What this is
 

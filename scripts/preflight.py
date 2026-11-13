@@ -29,6 +29,17 @@ def check(label: str, passed: bool, detail: str = "") -> None:
         failures.append(label)
 
 
+def note(label: str, detail: str) -> None:
+    """Informational, never a failure.
+
+    Alerts are the operator's eyes on an unattended book, but a run without
+    them is still a valid run -- failing preflight here would block collection
+    over something only the operator can supply. The point is that the gap is
+    printed every morning instead of discovered by silence.
+    """
+    print(f"  [NOTE] {label:<28} {detail}")
+
+
 def main() -> int:
     print("\nconfiguration")
     settings = load_settings()
@@ -36,6 +47,19 @@ def main() -> int:
     check("equity configured", settings.starting_equity_usd > 0, f"${settings.starting_equity_usd}")
     check("HELIUS_API_KEY loaded", bool(os.getenv("HELIUS_API_KEY")))
     check("COINGECKO_API_KEY loaded", bool(os.getenv("COINGECKO_API_KEY")))
+
+    from meme_flight_recorder.notify import credentials
+
+    token, chat_id = credentials()
+    if token and chat_id:
+        note("telegram alerts", "configured; open/close/scout alerts will send")
+    else:
+        missing = "TELEGRAM_BOT_TOKEN" if not token else "TELEGRAM_CHAT_ID"
+        note(
+            "telegram alerts",
+            f"NOT CONFIGURED - {missing} absent from .env; the book trades "
+            f"silently until it is filled by hand",
+        )
 
     print("\njournal")
     recorder = FlightRecorder(settings.database_path)
