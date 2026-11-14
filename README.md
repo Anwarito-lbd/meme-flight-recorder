@@ -76,6 +76,7 @@ flowchart LR
 | Deterministic Simulated Paper Replay & Gate Funnel | Obsidian Trading Brain Graph (`13 nodes · 67 edges · 0 orphans`) |
 |---|---|
 | ![Simulated Paper Replay Equity and Funnel](docs/proof/paper_replay_equity_and_funnel.png) | ![Obsidian Trading Brain Graph](docs/proof/obsidian_vault_graph.png) |
+| [![Figma-Grade Desk UI Design Spec](docs/proof/figma-design-spec.png)](docs/proof/figma-design-spec.png) | Self-contained dark-terminal design system tokens (`--canvas` through `--violet`), 4-gate severity badges, and `1400px` / `390px` grid anatomy (`scripts/render_figma_spec.py`) |
 
 ---
 

@@ -3,7 +3,7 @@
 - **Generated (UTC):** `2026-08-25T15:00:00+00:00`
 - **Execution Mode:** `PAPER ONLY` (no private keys, no live signing, no swaps)
 - **Control Architecture:** One Front Door -> 3-Agent Decision Layer -> Read-Only Bridge
-- **Hash Chain Integrity:** `VERIFIED` (Head SHA-256 prefix: `b4a1e175843d573d`)
+- **Hash Chain Integrity:** `VERIFIED` (Head SHA-256 prefix: `3a95746022d0fe92`)
 - **Research Packets Logged:** `16` (Paper Open: 5, L2 Draft: 1, Monitor: 1, Risk Rejected: 0, Safety Rejected: 9)
 - **Paper Book:** `0` open / `5` closed (Wins: `3/5`, Realized PnL: `$+11.9925`)
 
@@ -22,22 +22,22 @@
 
 | Symbol | Action | Virality Stance (Score) | Safety Verdict | Risk Gate | Hash |
 |---|---|---|---:|---|---|
-| `HAROLD` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `4ccea1220c` |
-| `RUGCAT` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `bcaf7982eb` |
-| `WHALE9` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `addd18264f` |
-| `CABAL1` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `486aa5665e` |
-| `MINTLIVE` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `fbdb5b6255` |
-| `CATE2` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `e468cc71c0` |
-| `NOROUTE` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `1ffd158666` |
-| `NOROUTE2` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `bf20bfbce5` |
-| `YOUNGIE` | `MONITOR_ONLY` | emerging_chatter (56.7) | `pass` / `monitor` | safety_gate_monitor | `bb5481c36c` |
-| `BONKJR` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `0f1c53b9f7` |
-| `DEVOUT` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `d09fc7872e` |
-| `THINPL` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `11bdfd1595` |
-| `THINPL2` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `a8a991c6e6` |
-| `WIFEY` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `5cb5985846` |
-| `PENGUX` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `d864f7eba6` |
-| `DRAFT1` | `HUMAN_APPROVAL_DRAFT` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `b4a1e17584` |
+| `HAROLD` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `8fd39a82a9` |
+| `RUGCAT` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `694b97f78b` |
+| `WHALE9` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `6f7cf58b51` |
+| `CABAL1` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `dca02355ec` |
+| `MINTLIVE` | `REJECTED` | spam_heavy (0.0) | `fail` / `reject` | safety_gate_reject | `88e214082c` |
+| `CATE2` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `a5d90820d9` |
+| `NOROUTE` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `bd728835d2` |
+| `NOROUTE2` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `d46d29f3e2` |
+| `YOUNGIE` | `MONITOR_ONLY` | emerging_chatter (56.7) | `pass` / `monitor` | safety_gate_monitor | `1dd92e2e31` |
+| `BONKJR` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `8440b0a04e` |
+| `DEVOUT` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `0fb144234e` |
+| `THINPL` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `0ec467d9f1` |
+| `THINPL2` | `REJECTED` | emerging_chatter (56.7) | `fail` / `reject` | safety_gate_reject | `adb7365ac4` |
+| `WIFEY` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `a6f023b6bb` |
+| `PENGUX` | `PAPER_OPEN` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `122432bec0` |
+| `DRAFT1` | `HUMAN_APPROVAL_DRAFT` | emerging_chatter (56.7) | `pass` / `eligible_for_strategy_review` | APPROVED ($10.0) | `3a95746022` |
 
 ## Paper Book Closures
 
